@@ -53,6 +53,16 @@ jobs:
           export CLOUDFLARE_API_TOKEN="$token" CLOUDFLARE_ACCOUNT_ID="$account"
           W="npx --yes wrangler@3.80.0"
 
+          # What the token can do, without printing it: its shape, whether Cloudflare accepts it,
+          # and whether it can see this account and its Workers and KV storage.
+          echo "API token: ${#token} characters (usually 40). Account ID: ${#account} characters (should be 32)."
+          api() { curl -s -H "Authorization: Bearer $token" "https://api.cloudflare.com/client/v4/$1"; }
+          verdict() { python3 -c "import json,sys; d=json.load(sys.stdin); print('ok' if d.get('success') else 'refused: ' + '; '.join(e.get('message','') for e in d.get('errors') or []))"; }
+          echo "Token valid:            $(api user/tokens/verify | verdict)"
+          echo "Account visible:        $(api accounts/$account | verdict)"
+          echo "Workers scripts access: $(api accounts/$account/workers/scripts | verdict)"
+          echo "KV storage access:      $(api "accounts/$account/storage/kv/namespaces?per_page=1" | verdict)"
+
           find_id() {
             curl -s -H "Authorization: Bearer $token" \
               "https://api.cloudflare.com/client/v4/accounts/$account/storage/kv/namespaces?per_page=100" \

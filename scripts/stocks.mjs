@@ -18,7 +18,9 @@ import { fileURLToPath } from 'node:url';
 const PRICES_PY = path.join(path.dirname(fileURLToPath(import.meta.url)), 'prices.py');
 const TOP_N = 10;
 // The world's main stock market benchmarks (Yahoo Finance symbols), shown on the Stocks tab.
-export const BENCHMARKS = ['^GSPC', '^DJI', '^IXIC', '^NDX', '^RUT', '^FTSE', '^FTMC', '^GDAXI', '^FCHI', '^STOXX50E', '^N225', '^HSI', '^AXJO', '000001.SS', '000300.SS', '^BSESN', '^NSEI'];
+// The pound, bitcoin, gold and oil too, for the markets strip in the Scout iPhone app.
+export const BENCHMARKS = ['^GSPC', '^DJI', '^IXIC', '^NDX', '^RUT', '^FTSE', '^FTMC', '^GDAXI', '^FCHI', '^STOXX50E', '^N225', '^HSI', '^AXJO', '000001.SS', '000300.SS', '^BSESN', '^NSEI',
+  'GBPUSD=X', 'EURGBP=X', 'BTC-USD', 'GC=F', 'BZ=F'];
 const MAX_WATCH = 40;
 // Stocks people follow in the Scout iPhone app (stocks-worker), most recently asked for first.
 // Capped so the AI summaries stay cheap however many people use the app.

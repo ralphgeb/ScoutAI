@@ -5,7 +5,7 @@ on:
     # Checks every 30 minutes whether anything is due (London time):
     #   - the news and Today briefing once a day from 5:00 (at half price
     #     through the AI batch queue, which can take a while, so it is ready early)
-    #   - stock prices about once an hour on weekdays
+    #   - stock prices every 30 minutes on weekdays (published to the Scout service, see scripts/publish.mjs)
     # GitHub often starts scheduled runs late or skips some, so the updater
     # catches up on anything missed instead of relying on exact times.
     # Checks with nothing to do take a few seconds.
@@ -105,11 +105,15 @@ jobs:
           AI_BATCH: ${{ github.event_name == 'schedule' }}
           PUSH: ${{ github.event.inputs.push || '' }}
           BRAVE_API_KEY: ${{ secrets.BRAVE_API_KEY }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Save results
         if: steps.again.outputs.go == 'true'
         run: |
           git config user.name "rumour-radar-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Prices published to the Scout service aren't saved here too, so the repository stays small.
+          if [ -f .stocks-published ]; then git checkout -- data/stocks.json 2>/dev/null || true; rm -f .stocks-published; fi
           git add data
           git diff --cached --quiet || (git commit -m "Update ${{ needs.check.outputs.mode }}" && git pull --rebase && git push)

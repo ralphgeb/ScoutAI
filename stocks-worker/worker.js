@@ -7,6 +7,11 @@
 //
 //   POST /add   {"symbols": ["AAPL", "BARC.L"]}  → adds or refreshes them
 //   GET  /list                                  → {"symbols": [{"symbol": "AAPL", "requested": "…"}]}
+//   GET  /stocks.json                           → the latest prices, AI summaries and headlines
+//
+// Prices: the ScoutAI updater writes stocks.json every 30 minutes on weekdays straight into this
+// service's KV store (with the Cloudflare key it already has), instead of saving a new copy into the
+// repository each time. Phones and the web app read it from here, cached at the edge for a minute.
 //
 // Free to run: Cloudflare's free Workers plan stops rather than bills, and the updater caps how
 // many of these stocks get AI summaries, so the AI cost stays small however many people use it.
@@ -72,6 +77,17 @@ export default {
       return json({ ok: true, symbols, refreshed: added, summarising: summarising || (brandNew > 0 && !!env.DISPATCH_TOKEN) });
     }
 
+    if (url.pathname === "/stocks.json" && request.method === "GET") {
+      const cache = caches.default;
+      const key = new Request("https://files.scout/stocks.json");
+      const hit = await cache.match(key);
+      if (hit) return new Response(hit.body, { headers: { "Content-Type": "application/json", "Cache-Control": "max-age=60", ...cors() } });
+      const body = await env.REQUESTS.get("file:stocks.json");
+      if (!body) return json({ error: "Not published yet" }, 404);
+      await cache.put(key, new Response(body, { headers: { "Content-Type": "application/json", "Cache-Control": "max-age=60" } }));
+      return new Response(body, { headers: { "Content-Type": "application/json", "Cache-Control": "max-age=60", ...cors() } });
+    }
+
     if (url.pathname === "/weather" && request.method === "GET") {
       return weather(url, request, env);
     }
@@ -88,7 +104,7 @@ export default {
       return json({ symbols: out });
     }
 
-    return json({ service: "Scout", endpoints: ["POST /add", "GET /list", "GET /weather?lat=&lon=&tz="] });
+    return json({ service: "Scout", endpoints: ["POST /add", "GET /list", "GET /stocks.json", "GET /weather?lat=&lon=&tz="] });
   },
 
   // Every 10 minutes: start the quick update if stocks were added while the last one was recent.

@@ -1,0 +1,78 @@
+name: Scout stocks list service
+
+# Deploys stocks-worker to Cloudflare Workers: the shared list of stocks people follow in the
+# Scout iPhone app, read by the morning update to write their AI summaries.
+# Needs GitHub secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID (the same ones as Halo's
+# Whoop sign-in service). Creates its KV store the first time.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - stocks-worker/**
+      - .github/workflows/stocks-worker.yml
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: stocks-worker
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check the secrets are set
+        id: secrets
+        run: |
+          ready=true
+          for v in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID; do
+            if [ -z "${!v}" ]; then ready=false; echo "::notice::Missing GitHub secret $v"; fi
+          done
+          if [ "$ready" = false ] && [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "::error::Add CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID to this repository's secrets first"; exit 1
+          fi
+          echo "ready=$ready" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        if: steps.secrets.outputs.ready == 'true'
+        with:
+          node-version: 20
+
+      - name: Create the KV store (first time) and deploy
+        if: steps.secrets.outputs.ready == 'true'
+        run: |
+          set -o pipefail
+          # Pasted secrets often pick up a line break or spaces, which breaks the request header.
+          token=$(printf %s "$CLOUDFLARE_API_TOKEN" | tr -d '[:space:]')
+          account=$(printf %s "$CLOUDFLARE_ACCOUNT_ID" | tr -d '[:space:]')
+          echo "::add-mask::$token"
+          export CLOUDFLARE_API_TOKEN="$token" CLOUDFLARE_ACCOUNT_ID="$account"
+          W="npx --yes wrangler@3.80.0"
+
+          find_id() {
+            curl -s -H "Authorization: Bearer $token" \
+              "https://api.cloudflare.com/client/v4/accounts/$account/storage/kv/namespaces?per_page=100" \
+              | python3 -c "import json,sys; d=json.load(sys.stdin); print(next((n['id'] for n in d.get('result') or [] if n['title']=='scout-stocks-requests'), ''))"
+          }
+          id=$(find_id)
+          if [ -z "$id" ]; then
+            echo "Creating the KV store…"
+            curl -s -X POST -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
+              -d '{"title":"scout-stocks-requests"}' \
+              "https://api.cloudflare.com/client/v4/accounts/$account/storage/kv/namespaces" > create.json
+            python3 -c "import json; d=json.load(open('create.json')); print('created' if d.get('success') else d.get('errors'))"
+            id=$(find_id)
+          fi
+          if [ -z "$id" ]; then
+            echo "::error::Couldn't create or find the KV store. The Cloudflare token needs 'Workers KV Storage: Edit' as well as 'Workers Scripts: Edit'."
+            exit 1
+          fi
+          printf '\n[[kv_namespaces]]\nbinding = "REQUESTS"\nid = "%s"\n' "$id" >> wrangler.toml
+          $W deploy 2>&1 | tee deploy.log
+          url=$(grep -oE "https://[a-zA-Z0-9.-]+\.workers\.dev" deploy.log | head -1)
+          echo "::notice::Scout stocks list: $url (the app expects https://scout-stocks.ralph-gebara.workers.dev)"
+          curl -s "$url/list" | head -c 300; echo

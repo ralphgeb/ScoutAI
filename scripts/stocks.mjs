@@ -20,6 +20,9 @@ const TOP_N = 10;
 // The world's main stock market benchmarks (Yahoo Finance symbols), shown on the Stocks tab.
 export const BENCHMARKS = ['^GSPC', '^DJI', '^IXIC', '^NDX', '^RUT', '^FTSE', '^FTMC', '^GDAXI', '^FCHI', '^STOXX50E', '^N225', '^HSI', '^AXJO', '000001.SS', '000300.SS', '^BSESN', '^NSEI'];
 const MAX_WATCH = 40;
+// Stocks people follow in the Scout iPhone app (stocks-worker), most recently asked for first.
+// Capped so the AI summaries stay cheap however many people use the app.
+export const MAX_SHARED = 120;
 
 // Roughly the largest US-listed companies. The top 20 are picked from these by live market value.
 // (The order here is only used if market values can't be fetched.)
@@ -126,9 +129,12 @@ async function summarise(symbols, data, stories, ai) {
 }
 
 // ---------- main ----------
-export async function updateStocks({ prev, watchlist, stories, ai, summariseMode = 'all' }) {
+export async function updateStocks({ prev, watchlist, shared = [], stories, ai, summariseMode = 'all' }) {
   const mode = summariseMode === 'all' ? 'all' : summariseMode === 'prices' ? 'prices' : 'stocks';
   const watch = [...new Set((watchlist || []).map((s) => String(s).toUpperCase().trim()).filter(validSymbol))].slice(0, MAX_WATCH);
+  // Skip ones that didn't exist last time, so a mistyped ticker isn't looked up every hour.
+  const extra = [...new Set((shared || []).map((s) => String(s).toUpperCase().trim()).filter(validSymbol))]
+    .filter((s) => !watch.includes(s) && !(prev?.invalid || []).includes(s)).slice(0, MAX_SHARED);
   const data = {
     updated: new Date().toISOString(),
     pricesUpdated: new Date().toISOString(),
@@ -136,24 +142,25 @@ export async function updateStocks({ prev, watchlist, stories, ai, summariseMode
     top: (prev?.top?.length ? prev.top : CANDIDATES).slice(0, TOP_N),
     benchmarks: BENCHMARKS,
     watch,
+    shared: extra,
     quotes: {}, charts: {}, news: { ...(prev?.news || {}) }, summaries: { ...(prev?.summaries || {}) }, invalid: []
   };
   const had = (s) => prev?.quotes?.[s]?.price != null && !prev?.invalid?.includes(s);
 
   if (mode === 'all') {
     // Full data for every candidate (to rank by market value) and every stock you added.
-    const syms = [...new Set([...CANDIDATES, ...watch])];
+    const syms = [...new Set([...CANDIDATES, ...watch, ...extra])];
     const res = await runPy(syms, { info: true, charts: ['d1', 'm1', 'y1'], news: syms });
     const withCap = CANDIDATES.filter((s) => res[s]?.quote?.marketCap);
     if (withCap.length >= TOP_N) data.top = withCap.sort((a, b) => res[b].quote.marketCap - res[a].quote.marketCap).slice(0, TOP_N);
-    for (const s of [...new Set([...data.top, ...watch])]) {
+    for (const s of [...new Set([...data.top, ...watch, ...extra])]) {
       if (res[s]?.quote) { data.quotes[s] = round(res[s].quote); data.charts[s] = res[s].charts; if (res[s].news) data.news[s] = res[s].news; }
       else if (had(s)) { data.quotes[s] = prev.quotes[s]; data.charts[s] = prev.charts?.[s] || {}; }
       else data.invalid.push(s);
     }
   } else {
     // Quick runs: full data only for stocks we have nothing on yet, prices for the rest.
-    const syms = [...new Set([...data.top, ...watch])];
+    const syms = [...new Set([...data.top, ...watch, ...extra])];
     const fresh = syms.filter((s) => !had(s));
     const known = syms.filter(had);
     const [full, light] = await Promise.all([
@@ -182,7 +189,7 @@ export async function updateStocks({ prev, watchlist, stories, ai, summariseMode
     }
     log(`Benchmarks: ${BENCHMARKS.filter((s) => data.quotes[s]).length} of ${BENCHMARKS.length}.`);
   }
-  const shown = [...new Set([...data.top, ...watch])];
+  const shown = [...new Set([...data.top, ...watch, ...extra])];
   log(`Prices for ${Object.keys(data.quotes).length} of ${shown.length} stocks${data.invalid.length ? `; not found: ${data.invalid.join(', ')}` : ''}.`);
 
   // AI summaries: all of them twice a day, only missing ones when you add a stock, none hourly.

@@ -58,6 +58,8 @@ const BRIEFING_FILE = path.join(DATA_DIR, 'briefing.json');
 const FEEDS_FILE = path.join(ROOT, 'feeds.json');
 const STOCKS_FILE = path.join(DATA_DIR, 'stocks.json');
 const WATCH_FILE = path.join(DATA_DIR, 'watchlist.json');
+// The Scout iPhone app's shared list of followed stocks (stocks-worker on Cloudflare).
+const STOCKS_REQUESTS_URL = process.env.STOCKS_REQUESTS_URL || 'https://scout-stocks.ralph-gebara.workers.dev';
 
 export const TOPICS = [
   'AI', 'Apple', 'Google', 'Microsoft', 'Amazon', 'Meta', 'Nvidia', 'Tesla & EVs',
@@ -81,6 +83,18 @@ async function runParallel(items, limit, fn) {
 }
 
 const log = (...a) => console.log('[rumour-radar]', ...a);
+
+/** Stocks followed in the Scout app, most recently asked for first. Empty if the list can't be reached. */
+async function sharedStocks() {
+  try {
+    const r = await fetch(`${STOCKS_REQUESTS_URL}/list`, { signal: AbortSignal.timeout(15000) });
+    if (!r.ok) return [];
+    const j = await r.json();
+    return (j.symbols || []).map((x) => String(x.symbol || '').toUpperCase()).filter(validSymbol);
+  } catch {
+    return [];
+  }
+}
 
 async function readJSON(file, fallback) {
   try { return JSON.parse(await fs.readFile(file, 'utf8')); } catch { return fallback; }
@@ -1263,11 +1277,14 @@ export async function main() {
     await writeJSON(WATCH_FILE, watchlist);
     log(`Watchlist: ${watchlist.join(', ') || '(empty)'}`);
   }
+  // Stocks people follow in the Scout iPhone app, so they get prices and AI summaries too.
+  const shared = await sharedStocks();
+  if (shared.length) log(`Stocks followed in the Scout app: ${shared.length}.`);
   const ai = (body) => callDirect({ model: MODEL, ...body }, apiKey); // stock summaries: small, sent straight away
   const doStocks = async (summariseMode) => {
     try {
       const prev = await readJSON(STOCKS_FILE, null);
-      const st = await updateStocks({ prev, watchlist, stories: news.stories, ai, summariseMode });
+      const st = await updateStocks({ prev, watchlist, shared, stories: news.stories, ai, summariseMode });
       await writeJSON(STOCKS_FILE, st);
     } catch (e) {
       if (e.fatal) { console.error('\n❌ ' + e.message + '\n'); process.exit(1); }

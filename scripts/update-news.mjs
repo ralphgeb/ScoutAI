@@ -23,7 +23,7 @@ const MAX_TRIAGE = 1200;       // headlines checked in the quick first pass
 const TRIAGE_BATCH = 60;       // headlines per quick-pass request
 const BATCH_SIZE = 6;          // articles per full-analysis request
 // Batch mode (scheduled updates): requests go through Anthropic's Message Batches
-// API at half price. It can take a while, so the daily update starts at 5:00.
+// API at half price. It can take a while, so the daily update starts at 6:00.
 const USE_BATCH = /^(1|true|yes)$/i.test(process.env.AI_BATCH || '');
 const BATCH_WAIT_MIN = Number(process.env.BATCH_WAIT_MIN || 25); // after this, unfinished requests are sent normally
 const PARALLEL = USE_BATCH ? 100 : 3; // AI requests running at the same time
@@ -43,7 +43,7 @@ const FASHION_OUTLETS = /WWD|Business of Fashion|Vogue|Harper's Bazaar|Fashionis
 
 import { parseFeed, findMetaImage, findPublished, stripHtml } from './feed-parser.mjs';
 import { updateStocks, validSymbol } from './stocks.mjs';
-import { publishStocks, readPublishedStocks } from './publish.mjs';
+import { publishFile, publishStocks, readPublishedStocks } from './publish.mjs';
 import { vapidKeys, ensurePublicKey, saveFromApp, sendMorning } from './push.mjs';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
@@ -84,6 +84,20 @@ async function runParallel(items, limit, fn) {
 }
 
 const log = (...a) => console.log('[rumour-radar]', ...a);
+
+/** Tickers the last three days' stories name, most-mentioned first. */
+function mentionedStocks(stories) {
+  const since = Date.now() - 72 * 3600e3;
+  const count = new Map();
+  for (const s of stories || []) {
+    if (Date.parse(s.first_published || s.first_seen || '') < since) continue;
+    for (const k of s.stocks || []) {
+      const t = String(k.ticker || '').toUpperCase();
+      if (validSymbol(t)) count.set(t, (count.get(t) || 0) + 1);
+    }
+  }
+  return [...count.entries()].sort((a, b) => b[1] - a[1]).map(([t]) => t);
+}
 
 /** Stocks followed in the Scout app, most recently asked for first. Empty if the list can't be reached. */
 async function sharedStocks() {
@@ -1288,7 +1302,7 @@ export async function main() {
       const local = await readJSON(STOCKS_FILE, null);
       const remote = await readPublishedStocks();
       const prev = (remote?.pricesUpdated || '') > (local?.pricesUpdated || '') ? remote : local;
-      const st = await updateStocks({ prev, watchlist, shared, stories: news.stories, ai, summariseMode });
+      const st = await updateStocks({ prev, watchlist, shared, mentioned: mentionedStocks(news.stories), stories: news.stories, ai, summariseMode });
       await writeJSON(STOCKS_FILE, st);
       // Published to the Scout service instead of saved into the repository (see publish.mjs).
       if (await publishStocks(st)) {
@@ -1303,7 +1317,23 @@ export async function main() {
     }
   };
 
-  // Quick updates: 'stocks' when you add a stock or refresh the Stocks tab, 'prices' every hour on weekdays.
+  // Prices for as many stocks as possible (about 3,500), fetched in bulk and published as
+  // prices.json, plus yesterday's biggest risers and fallers. Free: no AI, a few minutes on GitHub.
+  const doUniverse = async () => {
+    const SYMBOLS = path.join(DATA_DIR, 'symbols.json');
+    const out = path.join(ROOT, '.universe.json');
+    await new Promise((resolve) => execFile(process.env.PYTHON || 'python3', [path.join(ROOT, 'scripts', 'universe.py'), SYMBOLS, out], { timeout: 15 * 60e3, maxBuffer: 1 << 24 }, (err, so, se) => {
+      if (so) process.stdout.write(so);
+      if (err) log(`Wide price list skipped: ${(se || err.message).split('\n').filter(Boolean).slice(-2).join(' | ')}`);
+      resolve();
+    }));
+    const data = await readJSON(out, null);
+    await fs.rm(out, { force: true });
+    if (!data?.q || !Object.keys(data.q).length) return;
+    log(await publishFile('prices.json', data) ? `Prices for ${Object.keys(data.q).length} stocks published.` : 'Wide price list not published.');
+  };
+
+  // Quick updates: 'stocks' when you add a stock or refresh the Stocks tab, 'prices' every 30 minutes on weekdays.
   const MODE = (process.env.MODE || 'full').toLowerCase();
 
   // Morning notifications: keys, sign-ups from the app, and the ~7:00 send.
@@ -1326,7 +1356,8 @@ export async function main() {
   }
   if (MODE === 'stocks' || MODE === 'prices') {
     await doStocks(MODE === 'prices' ? 'prices' : 'missing');
-    log(`${MODE === 'prices' ? 'Hourly prices' : 'Stocks-only'} update done.`);
+    if (MODE === 'prices') await doUniverse();
+    log(`${MODE === 'prices' ? 'Prices' : 'Stocks-only'} update done.`);
     return;
   }
 
@@ -1423,6 +1454,7 @@ export async function main() {
   briefing.updated = new Date().toISOString();
 
   await doStocks('all');
+  await doUniverse();
 
   await writeJSON(NEWS_FILE, news);
   await writeJSON(BRIEFING_FILE, briefing);

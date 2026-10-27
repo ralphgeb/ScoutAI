@@ -33,7 +33,7 @@ The new workflow does two things:
 
 **What you need:** a computer with a web browser, about 25 minutes, and a bank card for about £5 of AI credit. You don't need to install anything or write any code.
 
-**How it works:** GitHub (free) does all the work. At 5:00 each morning London time it reads the news sites, asks Claude to analyse the new articles, writes the briefing, and saves the results. GitHub Pages (also free) hosts the app itself.
+**How it works:** GitHub (free) does all the work. At 6:00 each morning London time it reads the news sites, asks Claude to analyse the new articles, writes the briefing, and saves the results. GitHub Pages (also free) hosts the app itself.
 
 ---
 
@@ -128,7 +128,7 @@ The refresh button at the top right, or pulling down on any tab, always reloads 
 1. Open the app and go to **Settings → Live refresh**.
 2. Paste the key and tap **Save key**. The status changes to **On**.
 
-Tapping refresh (or pulling down) updates the **Tube and weather** straight away and fetches the **latest stock prices** (about a minute). Newly added stocks also get their AI summary. Refresh never re-runs the news, so it costs almost nothing. **News and Today update at 5:00 each morning.** For an extra news update, use **Actions → Update news → Run workflow** on GitHub.
+Tapping refresh (or pulling down) updates the **Tube and weather** straight away and fetches the **latest stock prices** (about a minute). Newly added stocks also get their AI summary. Refresh never re-runs the news, so it costs almost nothing. **News and Today update at 6:00 each morning.** For an extra news update, use **Actions → Update news → Run workflow** on GitHub.
 
 **About safety:**
 - The key is stored only on your phone.
@@ -165,7 +165,7 @@ The app has four tabs along the bottom.
 
 - **Today** opens with a **live weather card**: the current temperature and conditions, today's high and low, and the forecast every 2 hours for the next 10 hours. It updates every time you open the app. The first time, your iPhone asks for your location. If you say no, it shows London. You can switch between My location and London in **Settings → Weather**. Tap the card to refresh it.
 - Under the weather, **Tube status** shows every Tube line and the Elizabeth line, live from TfL, with the time it was updated. Lines with problems are listed first. Tap one to see why. It refreshes every time you open the app. You can hide it in **Settings → Tube status**.
-- **Today** is your tech front page. Briefings arrive at 5:00 each morning, London time. Each one has:
+- **Today** is your tech front page. Briefings arrive at 6:00 each morning, London time. Each one has:
   - a cover headline and an overview of what happened
   - the top stories with pictures
   - **Rumour watch**
@@ -233,7 +233,7 @@ To change a file, open it on GitHub, click the **pencil** icon to edit, then **C
 
 GitHub and the hosting are free. The AI uses Claude Haiku, the cheapest model.
 
-The AI reads each article and writes a summary with key points (no long write-ups, which keeps the cost down). Scheduled updates use Anthropic's batch queue, which costs half as much but can take a while, so they start at 5:00 each morning. On the other hand, updates now run twice a day (plus whenever you tap refresh) instead of every 30 minutes. Each daily update analyses up to 152 new stories, 38 for each of Tech, Finance, World and Fashion, and the app keeps 400 stories (100 per section).
+The AI reads each article and writes a summary with key points (no long write-ups, which keeps the cost down). Scheduled updates use Anthropic's batch queue, which costs half as much but can take a while, so they start at 6:00 each morning. On the other hand, updates now run twice a day (plus whenever you tap refresh) instead of every 30 minutes. Each daily update analyses up to 152 new stories, 38 for each of Tech, Finance, World and Fashion, and the app keeps 400 stories (100 per section).
 
 Check **console.anthropic.com → Usage** after the first day to see the real cost, and keep a monthly spend limit set there. To spend less, lower `MAX_NEW_PER_RUN` near the top of `scripts/update-news.mjs`.
 
@@ -243,7 +243,7 @@ Check **console.anthropic.com → Usage** after the first day to see the real co
   - **"API key was rejected"**: redo Step 5, checking the name is exactly `ANTHROPIC_API_KEY`.
   - **"out of credit"**: add credit in the Anthropic console.
   - **Failure at "Save results"**: redo Step 6.
-- **Lots of short runs in Actions:** this is normal. Every 30 minutes GitHub checks whether anything is due (the 5:00 update, or hourly prices). When nothing is, the run finishes in a few seconds and its **update** job shows as skipped. If GitHub starts a run late or skips one, the next check catches up.
+- **Lots of short runs in Actions:** this is normal. Every 30 minutes GitHub checks whether anything is due (the 6:00 update, or prices every 30 minutes). When nothing is, the run finishes in a few seconds and its **update** job shows as skipped. If GitHub starts a run late or skips one, the next check catches up.
 - **Refresh says the key was rejected or lacks permission:** create the key again, making sure **Actions** is set to **Read and write** and your repository is selected.
 - **A news site shows "failed" in the log:** that site changed or blocked its feed. Delete it from `feeds.json`.
 - **A story has a short summary:** some sites block automatic reading. For those, the AI only has the feed summary and keeps it short rather than guessing.

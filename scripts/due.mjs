@@ -2,7 +2,7 @@
 // at when the last updates actually happened. GitHub often starts scheduled runs
 // late, or skips some, so instead of trusting the exact start time, the workflow
 // checks every 30 minutes and catches up on anything that is due.
-//   full   = news + Today briefing (once a day from 5:00, until it has run)
+//   full   = news + Today briefing (once a day from 6:00, until it has run)
 //   notify = the morning notification (from about 7:00, once the briefing is ready)
 //   prices = stock prices (weekdays, every 30 minutes, 7:00 to 22:30)
 //   none   = nothing to do
@@ -26,7 +26,7 @@ const weekday = !['Sat', 'Sun'].includes(parts.weekday);
 const offsetMin = Math.round((Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute) - Math.floor(now.getTime() / 60e3) * 60e3) / 60e3);
 const londonToday = (m) => Date.UTC(+parts.year, +parts.month - 1, +parts.day, 0, m) - offsetMin * 60e3;
 
-const SLOTS = [{ name: 'morning', at: 5 * 60 }];
+const SLOTS = [{ name: 'morning', at: 6 * 60 }];
 const CATCH_UP = 8 * 60; // keep trying for up to 8 hours after the slot
 
 const lastNews = time(read('news.json').updated);

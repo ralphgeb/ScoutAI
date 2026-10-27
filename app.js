@@ -57,7 +57,7 @@
   function nextUpdateLabel() {
     const { h, m } = londonParts();
     const mins = h * 60 + m;
-    return mins < 5 * 60 ? 'at 5:00' : 'tomorrow at 5:00';
+    return mins < 6 * 60 ? 'at 6:00' : 'tomorrow at 6:00';
   }
   const hash = (s) => [...String(s)].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7);
   const initials = (name, ticker) => {
@@ -290,7 +290,7 @@
       setBusy(false);
     }
   }
-  // Refresh never re-runs the news AI: news and Today come from the 5:00 update.
+  // Refresh never re-runs the news AI: news and Today come from the 6:00 update.
   // It updates the Tube and weather straight away, and stock prices (plus AI summaries for newly added stocks).
   const refreshAll = () => {
     window.RR?.refreshWeather?.();
@@ -321,7 +321,7 @@
 
     if (!ed) {
       // No briefing written yet: show the biggest stories so far.
-      if (!stories.length) { $('#todayBody').innerHTML = empty('☀️', 'Your first briefing is on its way', `Your briefing arrives at 5:00 each morning, London time. The next one is ${nextUpdateLabel()}.`); return; }
+      if (!stories.length) { $('#todayBody').innerHTML = empty('☀️', 'Your first briefing is on its way', `Your briefing arrives at 6:00 each morning, London time. The next one is ${nextUpdateLabel()}.`); return; }
       const top = stories.filter((s) => sectionOf(s) === 'Tech').sort((a, b) => storyScore(b) - storyScore(a)).slice(0, 6);
       $('#todayBody').innerHTML = `<p class="next" style="margin-top:0">Your first full tech briefing arrives ${esc(nextUpdateLabel())}. Here are the biggest tech stories so far.</p>
         ${top.map((s, i) => topCard(s, i + 1, headline(s), s.summary)).join('')}${customiseBtn}`;
@@ -426,7 +426,7 @@
     if (!b) {
       $('#todayBody').innerHTML = (pool.length
         ? `<p class="next" style="margin-top:0">Your first ${esc(name)} briefing arrives ${esc(nextUpdateLabel())}. Here are the biggest ${esc(name)} stories so far.</p>${pool.slice(0, 6).map((s, i) => topCard(s, i + 1, headline(s), s.summary)).join('')}`
-        : empty('☀️', `Your first ${name} briefing is on its way`, `Your briefing arrives at 5:00 each morning, London time. The next one is ${nextUpdateLabel()}.`)) + todayFoot();
+        : empty('☀️', `Your first ${name} briefing is on its way`, `Your briefing arrives at 6:00 each morning, London time. The next one is ${nextUpdateLabel()}.`)) + todayFoot();
       return;
     }
     const top = byId.get(b.lead_story_id) || pool.find((s) => imageOf(s));

@@ -10,11 +10,19 @@
 //
 // Free to run: Cloudflare's free Workers plan stops rather than bills, and the updater caps how
 // many of these stocks get AI summaries, so the AI cost stays small however many people use it.
+//
+// Quick summaries: when a stock nobody had asked for before is added, this starts ScoutAI's quick
+// "stocks" update (it summarises only stocks without a summary yet), so the summary arrives within
+// minutes instead of the next morning. At most one run every 10 minutes; anything added in between
+// waits for the next one, which a 10-minute timer starts. Needs the DISPATCH_TOKEN secret (a GitHub
+// key that can start workflows in ScoutAI); without it, new stocks wait for the morning update.
 
 const KEEP_DAYS = 45;
 const PER_REQUEST = 40;            // symbols in one request
 const PER_IP_PER_DAY = 60;         // symbols one address can add in a day
 const VALID = /^[A-Z0-9^][A-Z0-9.\-=^]{0,14}$/;
+const RUN_GAP_MS = 10 * 60e3;      // at most one quick update every 10 minutes
+const WORKFLOW = "https://api.github.com/repos/ralphgeb/ScoutAI/actions/workflows/update-news.yml/dispatches";
 
 export default {
   async fetch(request, env) {
@@ -39,14 +47,20 @@ export default {
 
       // Write only what's new or not refreshed for a day, to stay well inside the free KV limits.
       const now = new Date().toISOString();
-      let added = 0;
+      let added = 0, brandNew = 0;
       for (const s of symbols) {
         const last = await env.REQUESTS.get(`s:${s}`);
         if (last && Date.now() - Date.parse(last) < 20 * 3600e3) continue;
         await env.REQUESTS.put(`s:${s}`, now, { expirationTtl: KEEP_DAYS * 86400, metadata: { requested: now } });
         added++;
+        if (!last) brandNew++;
       }
-      return json({ ok: true, symbols, refreshed: added });
+      let summarising = false;
+      if (brandNew && env.DISPATCH_TOKEN) {
+        await env.REQUESTS.put("run:pending", now, { expirationTtl: 86400 });
+        summarising = await runIfDue(env);
+      }
+      return json({ ok: true, symbols, refreshed: added, summarising: summarising || (brandNew > 0 && !!env.DISPATCH_TOKEN) });
     }
 
     if (url.pathname === "/list" && request.method === "GET") {
@@ -63,7 +77,34 @@ export default {
 
     return json({ service: "Scout stocks", endpoints: ["POST /add", "GET /list"] });
   },
+
+  // Every 10 minutes: start the quick update if stocks were added while the last one was recent.
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(runIfDue(env));
+  },
 };
+
+/** Starts ScoutAI's quick stocks update when something is waiting and the last run was 10+ minutes ago. */
+async function runIfDue(env) {
+  if (!env.DISPATCH_TOKEN) return false;
+  if (!(await env.REQUESTS.get("run:pending"))) return false;
+  const last = await env.REQUESTS.get("run:last");
+  if (last && Date.now() - Date.parse(last) < RUN_GAP_MS) return false;
+  const r = await fetch(WORKFLOW, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.DISPATCH_TOKEN}`,
+      Accept: "application/vnd.github+json",
+      "User-Agent": "scout-stocks",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ ref: "main", inputs: { mode: "stocks", briefing: "no" } }),
+  });
+  if (!r.ok) return false;
+  await env.REQUESTS.put("run:last", new Date().toISOString(), { expirationTtl: 86400 });
+  await env.REQUESTS.delete("run:pending");
+  return true;
+}
 
 function cors() {
   return { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type" };

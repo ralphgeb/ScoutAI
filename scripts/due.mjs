@@ -4,7 +4,7 @@
 // checks every 30 minutes and catches up on anything that is due.
 //   full   = news + Today briefing (once a day from 5:00, until it has run)
 //   notify = the morning notification (from about 7:00, once the briefing is ready)
-//   prices = stock prices (weekdays, about once an hour, 7:00 to 22:30)
+//   prices = stock prices (weekdays, every 30 minutes, 7:00 to 22:30)
 //   none   = nothing to do
 import fs from 'node:fs';
 import path from 'node:path';
@@ -30,7 +30,12 @@ const SLOTS = [{ name: 'morning', at: 5 * 60 }];
 const CATCH_UP = 8 * 60; // keep trying for up to 8 hours after the slot
 
 const lastNews = time(read('news.json').updated);
-const lastPrices = time(read('stocks.json').pricesUpdated);
+// Prices live on the Scout service now (see publish.mjs); the repository's copy is the fallback.
+let lastPrices = time(read('stocks.json').pricesUpdated);
+try {
+  const r = await fetch(`${process.env.STOCKS_REQUESTS_URL || 'https://scout-stocks.ralph-gebara.workers.dev'}/stocks.json?t=${Date.now()}`, { signal: AbortSignal.timeout(15000) });
+  if (r.ok) lastPrices = Math.max(lastPrices, time((await r.json()).pricesUpdated));
+} catch { /* the repository's copy will do */ }
 
 let mode = 'none';
 let why = `London ${parts.weekday} ${parts.hour}:${parts.minute}: nothing due.`;
@@ -48,9 +53,9 @@ if (mode === 'none' && Object.keys(push.devices || {}).length && mins >= NOTIFY_
   mode = 'notify';
   why = 'The morning notification is due.';
 }
-if (mode === 'none' && weekday && mins >= 7 * 60 && mins <= 22 * 60 + 30 && now.getTime() - lastPrices > 50 * 60e3) {
+if (mode === 'none' && weekday && mins >= 7 * 60 && mins <= 22 * 60 + 30 && now.getTime() - lastPrices > 25 * 60e3) {
   mode = 'prices';
-  why = 'Hourly stock prices are due.';
+  why = 'Stock prices are due (every 30 minutes).';
 }
 
 console.log(why);

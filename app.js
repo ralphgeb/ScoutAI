@@ -224,7 +224,7 @@
     setRefreshLabel('Refreshing');
     setBusy(true);
     const before = updated;
-    const stocksStamp = async () => { try { const r = await fetch('data/stocks.json?t=' + Date.now(), { cache: 'no-store' }); return r.ok ? (await r.json()).updated : null; } catch { return null; } };
+    const stocksStamp = async () => { try { const r = await fetch('https://scout-stocks.ralph-gebara.workers.dev/stocks.json?t=' + Date.now(), { cache: 'no-store' }); return r.ok ? (await r.json()).updated : null; } catch { return null; } };
     try {
       const token = store.get('rr.ghToken', '');
       const repo = repoInfo();

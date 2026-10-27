@@ -43,6 +43,7 @@ const FASHION_OUTLETS = /WWD|Business of Fashion|Vogue|Harper's Bazaar|Fashionis
 
 import { parseFeed, findMetaImage, findPublished, stripHtml } from './feed-parser.mjs';
 import { updateStocks, validSymbol } from './stocks.mjs';
+import { publishStocks, readPublishedStocks } from './publish.mjs';
 import { vapidKeys, ensurePublicKey, saveFromApp, sendMorning } from './push.mjs';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
@@ -1283,9 +1284,19 @@ export async function main() {
   const ai = (body) => callDirect({ model: MODEL, ...body }, apiKey); // stock summaries: small, sent straight away
   const doStocks = async (summariseMode) => {
     try {
-      const prev = await readJSON(STOCKS_FILE, null);
+      // The newest copy: the one on the Scout service, or the repository's if that's newer.
+      const local = await readJSON(STOCKS_FILE, null);
+      const remote = await readPublishedStocks();
+      const prev = (remote?.pricesUpdated || '') > (local?.pricesUpdated || '') ? remote : local;
       const st = await updateStocks({ prev, watchlist, shared, stories: news.stories, ai, summariseMode });
       await writeJSON(STOCKS_FILE, st);
+      // Published to the Scout service instead of saved into the repository (see publish.mjs).
+      if (await publishStocks(st)) {
+        await fs.writeFile(path.join(DATA_DIR, '..', '.stocks-published'), st.pricesUpdated || 'yes');
+        log('Stocks published to the Scout service.');
+      } else {
+        log('Stocks not published to the Scout service; saving them in the repository instead.');
+      }
     } catch (e) {
       if (e.fatal) { console.error('\n❌ ' + e.message + '\n'); process.exit(1); }
       log(`Stocks update failed, keeping the previous prices: ${e.message}`);

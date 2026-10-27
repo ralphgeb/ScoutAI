@@ -89,7 +89,9 @@
   // ---------- data ----------
   async function loadData() {
     try {
-      const r = await fetch('data/stocks.json?t=' + Date.now(), { cache: 'no-store' });
+      // Prices live on the Scout service (updated every 30 minutes); the repository's copy is the fallback.
+      let r = await fetch('https://scout-stocks.ralph-gebara.workers.dev/stocks.json?t=' + Date.now(), { cache: 'no-store' }).catch(() => null);
+      if (!r || !r.ok) r = await fetch('data/stocks.json?t=' + Date.now(), { cache: 'no-store' });
       if (r.ok) data = await r.json();
     } catch { /* keep what we have */ }
     render();

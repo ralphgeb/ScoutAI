@@ -4,6 +4,10 @@ name: Scout stocks list service
 # Scout iPhone app, read by the morning update to write their AI summaries.
 # Needs GitHub secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID (the same ones as Halo's
 # Whoop sign-in service). Creates its KV store the first time.
+# Optional: SCOUT_DISPATCH_TOKEN, a GitHub key that can start this repository's workflows, so a
+# newly added stock gets its AI summary within minutes instead of the next morning.
+# Optional: WEATHERKIT_KEY_ID, WEATHERKIT_PRIVATE_KEY and APPLE_TEAM_ID, for the shared weather
+# (one Apple Weather call per area every 30 minutes, shared by everyone nearby).
 on:
   workflow_dispatch:
   push:
@@ -20,6 +24,10 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      SCOUT_DISPATCH_TOKEN: ${{ secrets.SCOUT_DISPATCH_TOKEN }}
+      WEATHERKIT_KEY_ID: ${{ secrets.WEATHERKIT_KEY_ID }}
+      WEATHERKIT_PRIVATE_KEY: ${{ secrets.WEATHERKIT_PRIVATE_KEY }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
     steps:
       - name: Checkout
@@ -53,6 +61,18 @@ jobs:
           export CLOUDFLARE_API_TOKEN="$token" CLOUDFLARE_ACCOUNT_ID="$account"
           W="npx --yes wrangler@3.80.0"
 
+          # What the token can do, without printing it: its shape, whether Cloudflare accepts it,
+          # and whether it can see this account and its Workers and KV storage.
+          echo "API token: ${#token} characters (usually 40). Account ID: ${#account} characters (should be 32)."
+          api() { curl -s -H "Authorization: Bearer $token" "https://api.cloudflare.com/client/v4/$1"; }
+          verdict() { python3 -c "import json,sys; d=json.load(sys.stdin); print('ok' if d.get('success') else 'refused: ' + '; '.join(e.get('message','') for e in d.get('errors') or []))"; }
+          case "$token" in cf*_*) echo "Token format: new Cloudflare style (starts cf…_)";; *) echo "Token format: classic";; esac
+          echo "Token valid (user):     $(api user/tokens/verify | verdict)"
+          echo "Token valid (account):  $(api accounts/$account/tokens/verify | verdict)"
+          echo "Account visible:        $(api accounts/$account | verdict)"
+          echo "Workers scripts access: $(api accounts/$account/workers/scripts | verdict)"
+          echo "KV storage access:      $(api "accounts/$account/storage/kv/namespaces?per_page=1" | verdict)"
+
           find_id() {
             curl -s -H "Authorization: Bearer $token" \
               "https://api.cloudflare.com/client/v4/accounts/$account/storage/kv/namespaces?per_page=100" \
@@ -76,3 +96,32 @@ jobs:
           url=$(grep -oE "https://[a-zA-Z0-9.-]+\.workers\.dev" deploy.log | head -1)
           echo "::notice::Scout stocks list: $url (the app expects https://scout-stocks.ralph-gebara.workers.dev)"
           curl -s "$url/list" | head -c 300; echo
+
+          # The key for quick summaries, if it's been added.
+          if [ -n "$SCOUT_DISPATCH_TOKEN" ]; then
+            gh=$(printf %s "$SCOUT_DISPATCH_TOKEN" | tr -d '[:space:]')
+            echo "::add-mask::$gh"
+            code=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $gh" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/workflows")
+            echo "GitHub key for quick summaries: $([ "$code" = 200 ] && echo "accepted" || echo "refused ($code)")"
+            printf %s "$gh" | $W secret put DISPATCH_TOKEN
+            echo "::notice::Quick summaries are on: a newly added stock gets its AI summary within about 10 minutes."
+          else
+            echo "::notice::Quick summaries are off (no SCOUT_DISPATCH_TOKEN secret): new stocks get their AI summary with the morning update."
+          fi
+
+          # Shared weather, if the WeatherKit key has been added.
+          if [ -n "$WEATHERKIT_KEY_ID" ] && [ -n "$WEATHERKIT_PRIVATE_KEY" ] && [ -n "$APPLE_TEAM_ID" ]; then
+            printf %s "$WEATHERKIT_KEY_ID" | tr -d '[:space:]' | $W secret put WEATHERKIT_KEY_ID
+            printf %s "$APPLE_TEAM_ID" | tr -d '[:space:]' | $W secret put APPLE_TEAM_ID
+            printf %s "$WEATHERKIT_PRIVATE_KEY" | $W secret put WEATHERKIT_PRIVATE_KEY
+            sleep 5
+            code=$(curl -s -o weather.json -w "%{http_code}" "$url/weather?lat=51.51&lon=-0.13&tz=Europe/London")
+            if [ "$code" = 200 ]; then
+              echo "::notice::Shared weather is on: $(python3 -c "import json; d=json.load(open('weather.json')); print(f\"London now {d['current']['temp']}°, {len(d['hours'])} hours ahead\")")"
+            else
+              echo "::warning::Shared weather answered $code: $(head -c 200 weather.json). Check the WeatherKit key, its key ID and the team ID."
+            fi
+          else
+            echo "::notice::Shared weather is off (add WEATHERKIT_KEY_ID, WEATHERKIT_PRIVATE_KEY and APPLE_TEAM_ID): each iPhone asks Apple Weather itself."
+          fi

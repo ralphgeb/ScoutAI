@@ -1,0 +1,5 @@
+# Scout's shared list of followed stocks (a Cloudflare Worker with one KV store).
+# Deployed by .github/workflows/stocks-worker.yml, which also creates the KV store and fills in its id.
+name = "scout-stocks"
+main = "worker.js"
+compatibility_date = "2025-01-01"

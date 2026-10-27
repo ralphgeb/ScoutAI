@@ -3,7 +3,7 @@ name: Update news
 on:
   schedule:
     # Checks every 30 minutes whether anything is due (London time):
-    #   - the news and Today briefing once a day from 5:00 (at half price
+    #   - the news and Today briefing once a day from 6:00 (at half price
     #     through the AI batch queue, which can take a while, so it is ready early)
     #   - stock prices every 30 minutes on weekdays (published to the Scout service, see scripts/publish.mjs)
     # GitHub often starts scheduled runs late or skips some, so the updater

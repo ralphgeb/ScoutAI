@@ -25,6 +25,8 @@ const MAX_WATCH = 40;
 // Stocks people follow in the Scout iPhone app (stocks-worker), most recently asked for first.
 // Capped so the AI summaries stay cheap however many people use the app.
 export const MAX_SHARED = 120;
+// Stocks the latest stories name, for the app's "In the news" list: prices and charts, no AI summaries.
+export const MAX_MENTIONED = 60;
 
 // Roughly the largest US-listed companies. The top 20 are picked from these by live market value.
 // (The order here is only used if market values can't be fetched.)
@@ -131,12 +133,16 @@ async function summarise(symbols, data, stories, ai) {
 }
 
 // ---------- main ----------
-export async function updateStocks({ prev, watchlist, shared = [], stories, ai, summariseMode = 'all' }) {
+export async function updateStocks({ prev, watchlist, shared = [], mentioned = [], stories, ai, summariseMode = 'all' }) {
   const mode = summariseMode === 'all' ? 'all' : summariseMode === 'prices' ? 'prices' : 'stocks';
   const watch = [...new Set((watchlist || []).map((s) => String(s).toUpperCase().trim()).filter(validSymbol))].slice(0, MAX_WATCH);
   // Skip ones that didn't exist last time, so a mistyped ticker isn't looked up every hour.
   const extra = [...new Set((shared || []).map((s) => String(s).toUpperCase().trim()).filter(validSymbol))]
     .filter((s) => !watch.includes(s) && !(prev?.invalid || []).includes(s)).slice(0, MAX_SHARED);
+  const named = [...new Set((mentioned || []).map((s) => String(s).toUpperCase().trim()).filter(validSymbol))]
+    .filter((s) => !(prev?.invalid || []).includes(s)).slice(0, MAX_MENTIONED);
+  // AI summaries only for the biggest companies and the stocks people follow, never just for being named.
+  const summarisable = (s) => !named.includes(s) || watch.includes(s) || extra.includes(s) || (prev?.top || CANDIDATES).includes(s);
   const data = {
     updated: new Date().toISOString(),
     pricesUpdated: new Date().toISOString(),
@@ -145,24 +151,25 @@ export async function updateStocks({ prev, watchlist, shared = [], stories, ai, 
     benchmarks: BENCHMARKS,
     watch,
     shared: extra,
+    mentioned: named,
     quotes: {}, charts: {}, news: { ...(prev?.news || {}) }, summaries: { ...(prev?.summaries || {}) }, invalid: []
   };
   const had = (s) => prev?.quotes?.[s]?.price != null && !prev?.invalid?.includes(s);
 
   if (mode === 'all') {
     // Full data for every candidate (to rank by market value) and every stock you added.
-    const syms = [...new Set([...CANDIDATES, ...watch, ...extra])];
+    const syms = [...new Set([...CANDIDATES, ...watch, ...extra, ...named])];
     const res = await runPy(syms, { info: true, charts: ['d1', 'm1', 'y1'], news: syms });
     const withCap = CANDIDATES.filter((s) => res[s]?.quote?.marketCap);
     if (withCap.length >= TOP_N) data.top = withCap.sort((a, b) => res[b].quote.marketCap - res[a].quote.marketCap).slice(0, TOP_N);
-    for (const s of [...new Set([...data.top, ...watch, ...extra])]) {
+    for (const s of [...new Set([...data.top, ...watch, ...extra, ...named])]) {
       if (res[s]?.quote) { data.quotes[s] = round(res[s].quote); data.charts[s] = res[s].charts; if (res[s].news) data.news[s] = res[s].news; }
       else if (had(s)) { data.quotes[s] = prev.quotes[s]; data.charts[s] = prev.charts?.[s] || {}; }
       else data.invalid.push(s);
     }
   } else {
     // Quick runs: full data only for stocks we have nothing on yet, prices for the rest.
-    const syms = [...new Set([...data.top, ...watch, ...extra])];
+    const syms = [...new Set([...data.top, ...watch, ...extra, ...named])];
     const fresh = syms.filter((s) => !had(s));
     const known = syms.filter(had);
     const [full, light] = await Promise.all([
@@ -191,12 +198,12 @@ export async function updateStocks({ prev, watchlist, shared = [], stories, ai, 
     }
     log(`Benchmarks: ${BENCHMARKS.filter((s) => data.quotes[s]).length} of ${BENCHMARKS.length}.`);
   }
-  const shown = [...new Set([...data.top, ...watch, ...extra])];
+  const shown = [...new Set([...data.top, ...watch, ...extra, ...named])];
   log(`Prices for ${Object.keys(data.quotes).length} of ${shown.length} stocks${data.invalid.length ? `; not found: ${data.invalid.join(', ')}` : ''}.`);
 
   // AI summaries: all of them twice a day, only missing ones when you add a stock, none hourly.
   if (mode !== 'prices' && ai) {
-    const ok = shown.filter((s) => data.quotes[s]?.price != null);
+    const ok = shown.filter((s) => data.quotes[s]?.price != null && (summarisable(s) || data.top.includes(s)));
     const need = mode === 'all' ? ok : ok.filter((s) => !data.summaries[s]);
     if (need.length) {
       const fresh = await summarise(need, data, stories, ai);

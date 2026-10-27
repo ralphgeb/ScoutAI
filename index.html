@@ -176,12 +176,12 @@
         <button class="cell link" id="tokenSave"><span>Save key</span></button>
         <button class="cell link danger" id="tokenRemove" hidden><span>Remove key</span></button>
       </div>
-      <div class="group-footer">Live refresh turns on by itself once a GitHub key is saved here: paste it above and tap <b>Save key</b>. Refresh updates the Tube and weather, and with a key also stock prices (stocks you add get their price and AI summary straight away). It doesn’t re-run the news: News and Today update at 5:00 each morning. The key is stored only in this app on this phone. A key saved in Safari doesn’t carry over to the home-screen app. <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">Create a key on GitHub</a>.</div>
+      <div class="group-footer">Live refresh turns on by itself once a GitHub key is saved here: paste it above and tap <b>Save key</b>. Refresh updates the Tube and weather, and with a key also stock prices (stocks you add get their price and AI summary straight away). It doesn’t re-run the news: News and Today update at 6:00 each morning. The key is stored only in this app on this phone. A key saved in Safari doesn’t carry over to the home-screen app. <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">Create a key on GitHub</a>.</div>
 
       <div class="group-header">App</div>
       <div class="group">
         <div class="cell"><span>Last update</span><span class="value" id="updatedSettings">—</span></div>
-        <div class="cell"><span>Automatic updates</span><span class="value">5:00 daily</span></div>
+        <div class="cell"><span>Automatic updates</span><span class="value">6:00 daily</span></div>
         <div class="cell"><span>Stories</span><span class="value" id="storyCount">—</span></div>
         <div class="cell"><span>News sources</span><span class="value" id="sourceCount">—</span></div>
         <button class="cell link" id="clearCacheBtn"><span>Reload app</span></button>
@@ -201,7 +201,7 @@
       <div class="group-header">How it works</div>
       <div class="group">
         <div class="cell text">
-          At 5:00 each morning (London time) the app reads about 100 tech, finance, world and fashion news sites. A quick first pass drops junk and groups the same story from different outlets. Then an AI reads each story and writes a summary and key points in its own words. It flags rumours (including market-moving world news) with odds of being true, lists stocks the story could move, and writes the Today tech briefing.
+          At 6:00 each morning (London time) the app reads about 100 tech, finance, world and fashion news sites. A quick first pass drops junk and groups the same story from different outlets. Then an AI reads each story and writes a summary and key points in its own words. It flags rumours (including market-moving world news) with odds of being true, lists stocks the story could move, and writes the Today tech briefing.
         </div>
       </div>
       <div class="group-footer">Some story pictures are found with DuckDuckGo and Brave Search. Write-ups, odds and stock effects are AI-generated and can be wrong. Not financial advice. Always check the original article.</div>
@@ -251,7 +251,7 @@
     <div class="sheet-body">
       <img src="icons/icon-192.png" alt="" class="welcome-icon">
       <h2>What do you want on Today?</h2>
-      <p class="secondary">Pick the topic of your briefing. It’s ready by 5:00 each morning, and you can change it any time in Settings.</p>
+      <p class="secondary">Pick the topic of your briefing. It’s ready by 6:00 each morning, and you can change it any time in Settings.</p>
       <div class="tiles" id="todayTiles"></div>
       <button class="btn-primary" id="todayDone">Continue</button>
     </div>

@@ -10,7 +10,6 @@
 
 export const SERVICE_URL = process.env.STOCKS_REQUESTS_URL || 'https://scout-stocks.ralph-gebara.workers.dev';
 const KV_TITLE = 'scout-stocks-requests';
-const KEY = 'file:stocks.json';
 
 const creds = () => {
   const token = (process.env.CLOUDFLARE_API_TOKEN || '').replace(/\s+/g, '');
@@ -29,7 +28,10 @@ export async function readPublishedStocks() {
 }
 
 /** Writes stocks.json to the service. Returns true when it's there. */
-export async function publishStocks(data) {
+export const publishStocks = (data) => publishFile('stocks.json', data);
+
+/** Writes a file (stocks.json, prices.json) to the service's KV store. Returns true when it's there. */
+export async function publishFile(name, data) {
   const c = creds();
   if (!c) return false;
   const api = `https://api.cloudflare.com/client/v4/accounts/${c.account}/storage/kv/namespaces`;
@@ -38,7 +40,7 @@ export async function publishStocks(data) {
     const list = await (await fetch(`${api}?per_page=100`, { headers, signal: AbortSignal.timeout(20000) })).json();
     const ns = (list.result || []).find((n) => n.title === KV_TITLE)?.id;
     if (!ns) return false;
-    const r = await fetch(`${api}/${ns}/values/${encodeURIComponent(KEY)}`, {
+    const r = await fetch(`${api}/${ns}/values/${encodeURIComponent(`file:${name}`)}`, {
       method: 'PUT', headers: { ...headers, 'Content-Type': 'application/json' },
       body: JSON.stringify(data), signal: AbortSignal.timeout(60000)
     });

@@ -58,7 +58,9 @@ jobs:
           echo "API token: ${#token} characters (usually 40). Account ID: ${#account} characters (should be 32)."
           api() { curl -s -H "Authorization: Bearer $token" "https://api.cloudflare.com/client/v4/$1"; }
           verdict() { python3 -c "import json,sys; d=json.load(sys.stdin); print('ok' if d.get('success') else 'refused: ' + '; '.join(e.get('message','') for e in d.get('errors') or []))"; }
-          echo "Token valid:            $(api user/tokens/verify | verdict)"
+          case "$token" in cf*_*) echo "Token format: new Cloudflare style (starts cf…_)";; *) echo "Token format: classic";; esac
+          echo "Token valid (user):     $(api user/tokens/verify | verdict)"
+          echo "Token valid (account):  $(api accounts/$account/tokens/verify | verdict)"
           echo "Account visible:        $(api accounts/$account | verdict)"
           echo "Workers scripts access: $(api accounts/$account/workers/scripts | verdict)"
           echo "KV storage access:      $(api "accounts/$account/storage/kv/namespaces?per_page=1" | verdict)"

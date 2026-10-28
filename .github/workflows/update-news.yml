@@ -20,9 +20,9 @@ on:
         options: [auto, "yes", "no"]
         default: auto
       mode:
-        description: "full = news and stocks, stocks = stocks only (quick), prices = prices only (quickest), notify = send the morning notification now"
+        description: "full = news and stocks, stocks = stocks only (quick), prices = prices only (quickest), notify = send the morning notification now, auto = whatever is due (the Scout service's 10-minute timer sends this)"
         type: choice
-        options: [full, stocks, prices, subscribe, notify]
+        options: [full, stocks, prices, subscribe, notify, auto]
         default: full
       watchlist:
         description: "Your stocks, sent by the app (leave empty)"
@@ -44,20 +44,23 @@ jobs:
       mode: ${{ steps.gate.outputs.mode }}
     steps:
       - uses: actions/checkout@v5
-        if: github.event_name == 'schedule'
+        if: github.event_name == 'schedule' || github.event.inputs.mode == 'auto'
         with:
           sparse-checkout: |
             scripts/due.mjs
             data/news.json
             data/stocks.json
+            data/push.json
           sparse-checkout-cone-mode: false
       - name: What's due?
         id: gate
         run: |
-          if [ "${{ github.event_name }}" != "schedule" ]; then
-            echo "go=true" >> "$GITHUB_OUTPUT"; echo "mode=${{ github.event.inputs.mode || 'full' }}" >> "$GITHUB_OUTPUT"
-          else
+          # GitHub's own schedule is unreliable (often only a few runs a day), so the Scout service's
+          # 10-minute timer also starts this with mode "auto": both just check what's due.
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event.inputs.mode }}" = "auto" ]; then
             node scripts/due.mjs
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"; echo "mode=${{ github.event.inputs.mode || 'full' }}" >> "$GITHUB_OUTPUT"
           fi
 
   update:
@@ -76,7 +79,7 @@ jobs:
       - name: Still due?
         id: again
         run: |
-          if [ "${{ github.event_name }}" = "schedule" ]; then node scripts/due.mjs; else echo "go=true" >> "$GITHUB_OUTPUT"; fi
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event.inputs.mode }}" = "auto" ]; then node scripts/due.mjs; else echo "go=true" >> "$GITHUB_OUTPUT"; fi
 
       - uses: actions/setup-node@v5
         if: steps.again.outputs.go == 'true'
@@ -102,7 +105,7 @@ jobs:
           MAKE_BRIEFING: ${{ github.event.inputs.briefing || 'auto' }}
           MODE: ${{ needs.check.outputs.mode }}
           WATCHLIST: ${{ github.event.inputs.watchlist || '' }}
-          AI_BATCH: ${{ github.event_name == 'schedule' }}
+          AI_BATCH: ${{ github.event_name == 'schedule' || github.event.inputs.mode == 'auto' }}
           PUSH: ${{ github.event.inputs.push || '' }}
           BRAVE_API_KEY: ${{ secrets.BRAVE_API_KEY }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

@@ -4,8 +4,10 @@ name: Scout stocks list service
 # Scout iPhone app, read by the morning update to write their AI summaries.
 # Needs GitHub secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID (the same ones as Halo's
 # Whoop sign-in service). Creates its KV store the first time.
-# Optional: SCOUT_DISPATCH_TOKEN, a GitHub key that can start this repository's workflows, so a
-# newly added stock gets its AI summary within minutes instead of the next morning.
+# Needed for reliable timing: SCOUT_DISPATCH_TOKEN, a GitHub key that can start this repository's
+# workflows. Every 10 minutes the service uses it to start the update (which checks what's due),
+# because GitHub's own schedule often runs only a few times a day; it also gives newly added
+# stocks their AI summary within minutes.
 # Optional: WEATHERKIT_KEY_ID, WEATHERKIT_PRIVATE_KEY and APPLE_TEAM_ID, for the shared weather
 # (one Apple Weather call per area every 30 minutes, shared by everyone nearby).
 on:
@@ -105,9 +107,9 @@ jobs:
               "https://api.github.com/repos/${{ github.repository }}/actions/workflows")
             echo "GitHub key for quick summaries: $([ "$code" = 200 ] && echo "accepted" || echo "refused ($code)")"
             printf %s "$gh" | $W secret put DISPATCH_TOKEN
-            echo "::notice::Quick summaries are on: a newly added stock gets its AI summary within about 10 minutes."
+            echo "::notice::Reliable timing is on: every 10 minutes the service starts the update for whatever is due (6:00 briefing, prices every 30 minutes), and new stocks get their AI summary within about 10 minutes."
           else
-            echo "::notice::Quick summaries are off (no SCOUT_DISPATCH_TOKEN secret): new stocks get their AI summary with the morning update."
+            echo "::warning::No SCOUT_DISPATCH_TOKEN secret: updates rely on GitHub's own schedule, which often runs only a few times a day, and new stocks get their AI summary with the morning update."
           fi
 
           # Shared weather, if the WeatherKit key has been added.

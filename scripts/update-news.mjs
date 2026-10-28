@@ -1458,6 +1458,9 @@ export async function main() {
 
   await writeJSON(NEWS_FILE, news);
   await writeJSON(BRIEFING_FILE, briefing);
+  // Also on the Scout service, where the app gets them within a minute (GitHub's file server can lag).
+  const sent = (await Promise.all([publishFile('news.json', news), publishFile('briefing.json', briefing)])).every(Boolean);
+  log(sent ? 'News and briefing published to the Scout service.' : 'News and briefing not published to the Scout service (the app falls back to GitHub).');
   await writeJSON(SEEN_FILE, [...done, ...seen].slice(0, MAX_SEEN));
   if (USE_BATCH) log(`AI requests at half price: ${batchStats.done}; sent normally: ${batchStats.fallback}.`);
   log(`Done: ${stats.added} new stories, ${stats.merged} merged into existing, ${stats.dropped} skipped as irrelevant. ${news.stories.length} stories total.`);

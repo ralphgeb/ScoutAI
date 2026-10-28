@@ -9,6 +9,8 @@
 //   GET  /list                                  → {"symbols": [{"symbol": "AAPL", "requested": "…"}]}
 //   GET  /stocks.json                           → the latest prices, AI summaries and headlines
 //   GET  /prices.json                           → prices for ~3,500 stocks and yesterday's risers and fallers
+//   GET  /news.json, /briefing.json             → the latest news and briefing, fresh within a minute
+//                                                 (GitHub's own file server can lag by five minutes)
 //
 // Prices: the ScoutAI updater writes stocks.json every 30 minutes on weekdays straight into this
 // service's KV store (with the Cloudflare key it already has), instead of saving a new copy into the
@@ -78,7 +80,7 @@ export default {
       return json({ ok: true, symbols, refreshed: added, summarising: summarising || (brandNew > 0 && !!env.DISPATCH_TOKEN) });
     }
 
-    if ((url.pathname === "/stocks.json" || url.pathname === "/prices.json") && request.method === "GET") {
+    if (["/stocks.json", "/prices.json", "/news.json", "/briefing.json"].includes(url.pathname) && request.method === "GET") {
       const name = url.pathname.slice(1);
       const cache = caches.default;
       const key = new Request(`https://files.scout/${name}`);

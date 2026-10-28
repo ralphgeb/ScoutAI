@@ -107,7 +107,6 @@ export default {
 
     const transitCity = url.pathname.match(/^\/transit\/(nyc|paris)$/)?.[1];
     if (transitCity && request.method === "GET") {
-      if (transitCity === "paris" && url.searchParams.get("debug") === "1") return json(await parisDebug(env));
       return transit(transitCity, env);
     }
 
@@ -340,7 +339,7 @@ function nycLevel(type) {
   return 1;
 }
 
-// Paris: metro and RER disruptions from PRIM's line reports (Navitia), active ones only.
+// Paris: metro and RER disruptions from PRIM's line reports (Navitia): active ones on the line itself.
 async function paris(env) {
   if (!env.PRIM_API_KEY) throw new Error("Paris isn't set up yet (PRIM_API_KEY)");
   const modes = ["physical_mode:Metro", "physical_mode:RapidTransit"];
@@ -358,7 +357,9 @@ async function paris(env) {
     for (const report of data.line_reports || []) {
       const id = lineId(report.line?.code || report.line?.name);
       if (!id) continue;
-      for (const did of disruptionLinks(report)) {
+      // Only what's on the line itself: PRIM also lists every station's lift and escalator outages.
+      const onLine = (report.line?.links || []).filter((l) => l.type === "disruption").map((l) => l.id);
+      for (const did of onLine) {
         const d = disruptions.get(did);
         if (!d || (d.status && d.status !== "active")) continue;
         const level = parisLevel(d);
@@ -366,22 +367,13 @@ async function paris(env) {
         const title = (d.messages || []).find((m) => (m.channel?.types || []).includes("title"))?.text;
         const text = title || (d.messages || [])[0]?.text;
         const works = /travaux/i.test(d.cause || "") || (d.tags || []).some((t) => /travaux/i.test(t));
-        const status = level === 2 ? (works ? "Part closed, planned works" : "Severe disruption") : (works ? "Planned works" : "Disrupted");
-        add(problems, id, { level, status, reason: plain(text) });
+        const status = level === 2 ? (works ? "Closed for works" : "Suspended") : (works ? "Planned works" : "Disrupted");
+        // "Métro 7 : Panne de signalisation - Trafic très perturbé" → "Panne de signalisation - Trafic très perturbé"
+        add(problems, id, { level, status, reason: plain(text).replace(/^(Métro|RER|Ligne)\s*\w+\s*:\s*/i, "") });
       }
     }
   }
   return summarise(PARIS_LINES, problems);
-}
-
-/** Every disruption a line report points to, on the line itself or on its stops. */
-function disruptionLinks(node, out = new Set()) {
-  if (Array.isArray(node)) node.forEach((n) => disruptionLinks(n, out));
-  else if (node && typeof node === "object") {
-    if (node.type === "disruption" && node.id) out.add(node.id);
-    for (const v of Object.values(node)) if (v && typeof v === "object") disruptionLinks(v, out);
-  }
-  return out;
 }
 
 function parisLevel(d) {
@@ -396,26 +388,3 @@ function parisLevel(d) {
   return 1;
 }
 
-/** What PRIM says for each line, for checking how its disruptions are read. Not cached. */
-async function parisDebug(env) {
-  if (!env.PRIM_API_KEY) return { error: "no key" };
-  const out = [];
-  for (const m of ["physical_mode:Metro", "physical_mode:RapidTransit"]) {
-    const r = await fetch(`https://prim.iledefrance-mobilites.fr/marketplace/v2/navitia/line_reports/physical_modes/${encodeURIComponent(m)}/line_reports?count=100&disable_geojson=true`,
-      { headers: { apikey: env.PRIM_API_KEY.trim(), Accept: "application/json" } });
-    const data = await r.json();
-    const disruptions = new Map((data.disruptions || []).map((d) => [d.id, d]));
-    for (const report of data.line_reports || []) {
-      const onLine = new Set((report.line?.links || []).filter((l) => l.type === "disruption").map((l) => l.id));
-      const objects = (report.pt_objects || []).map((o) => ({ type: o.embedded_type, ids: [...disruptionLinks(o)] }));
-      const all = disruptionLinks(report);
-      out.push({ line: report.line?.code, name: report.line?.name, onLine: onLine.size, objectTypes: [...new Set(objects.map((o) => o.type))],
-        disruptions: [...all].map((id) => { const d = disruptions.get(id) || {}; return {
-          where: onLine.has(id) ? "line" : (objects.find((o) => o.ids.includes(id))?.type || "?"), status: d.status,
-          severity: d.severity?.name, effect: d.severity?.effect, cause: d.cause, tags: d.tags, category: d.category,
-          title: plain((d.messages || []).find((x) => (x.channel?.types || []).includes("title"))?.text || d.messages?.[0]?.text, 90),
-          impacted: (d.impacted_objects || []).map((i) => i.pt_object?.embedded_type).slice(0, 3) }; }) });
-    }
-  }
-  return out;
-}

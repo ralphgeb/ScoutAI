@@ -41,6 +41,15 @@ const WEATHER_GRID = 0.05;          // degrees: about 5.5 km north–south
 const WEATHER_TTL = 30 * 60;        // seconds
 const WEATHER_PER_IP_PER_DAY = 300;
 
+// Metro status for New York (MTA, no key needed) and Paris (Île-de-France Mobilités' PRIM, needs the
+// free PRIM_API_KEY secret), fetched once every two minutes for everyone and boiled down to a short
+// list of lines, like TfL's for London (which phones read from TfL directly).
+//   GET /transit/nyc, GET /transit/paris
+//   → {"city": "nyc", "updated": "…", "source": "MTA", "lines": [{"id": "A", "name": "A train",
+//      "short": "A", "colour": "#0039A6", "text": "#FFFFFF", "level": 1, "status": "Delays", "reason": "…"}]}
+// level: 0 good service, 1 minor problems or planned works, 2 severe (suspended, part closed).
+const TRANSIT_TTL = 120;            // seconds
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -96,6 +105,11 @@ export default {
       return weather(url, request, env);
     }
 
+    const transitCity = url.pathname.match(/^\/transit\/(nyc|paris)$/)?.[1];
+    if (transitCity && request.method === "GET") {
+      return transit(transitCity, env);
+    }
+
     if (url.pathname === "/list" && request.method === "GET") {
       const out = [];
       let cursor;
@@ -108,7 +122,7 @@ export default {
       return json({ symbols: out });
     }
 
-    return json({ service: "Scout", endpoints: ["POST /add", "GET /list", "GET /stocks.json", "GET /prices.json", "GET /weather?lat=&lon=&tz="] });
+    return json({ service: "Scout", endpoints: ["POST /add", "GET /list", "GET /stocks.json", "GET /prices.json", "GET /weather?lat=&lon=&tz=", "GET /transit/nyc", "GET /transit/paris"] });
   },
 
   // Every 10 minutes: ask ScoutAI's workflow to do whatever is due (the 6:00 briefing, prices every
@@ -223,4 +237,160 @@ async function weatherToken(env) {
   const key = await crypto.subtle.importKey("pkcs8", der, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
   const sig = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, new TextEncoder().encode(`${head}.${claims}`));
   return `${head}.${claims}.${b64url(sig)}`;
+}
+
+// MARK: - Metro status
+
+const W = "#FFFFFF", K = "#000000";
+const NYC_LINES = [
+  ["1", "#EE352E", W], ["2", "#EE352E", W], ["3", "#EE352E", W], ["4", "#00933C", W], ["5", "#00933C", W],
+  ["6", "#00933C", W], ["7", "#B933AD", W], ["A", "#0039A6", W], ["C", "#0039A6", W], ["E", "#0039A6", W],
+  ["B", "#FF6319", W], ["D", "#FF6319", W], ["F", "#FF6319", W], ["M", "#FF6319", W], ["G", "#6CBE45", W],
+  ["J", "#996633", W], ["Z", "#996633", W], ["L", "#A7A9AC", W], ["N", "#FCCC0A", K], ["Q", "#FCCC0A", K],
+  ["R", "#FCCC0A", K], ["W", "#FCCC0A", K], ["S", "#808183", W], ["SIR", "#0F2D6B", W],
+].map(([id, colour, text]) => ({ id, short: id, name: id === "SIR" ? "Staten Island Railway" : id === "S" ? "Shuttles" : `${id} train`, colour, text }));
+
+const PARIS_LINES = [
+  ["1", "#FFCD00", K], ["2", "#003CA6", W], ["3", "#837902", W], ["3bis", "#6EC4E8", K], ["4", "#CF009E", W],
+  ["5", "#FF7E2E", K], ["6", "#6ECA97", K], ["7", "#FA9ABA", K], ["7bis", "#6ECA97", K], ["8", "#E19BDF", K],
+  ["9", "#B6BD00", K], ["10", "#C9910D", K], ["11", "#704B1C", W], ["12", "#007852", W], ["13", "#6EC4E8", K],
+  ["14", "#62259D", W], ["A", "#E2231A", W], ["B", "#5291CE", W], ["C", "#FFCE00", K], ["D", "#00814F", W],
+  ["E", "#C04191", W],
+].map(([id, colour, text]) => ({ id, short: id.replace("bis", "b"), name: /^[A-E]$/.test(id) ? `RER ${id}` : `Line ${id.replace("bis", " bis")}`, colour, text }));
+
+async function transit(city, env) {
+  const cache = caches.default;
+  const key = new Request(`https://transit.scout/${city}`);
+  const staleKey = new Request(`https://transit.scout/${city}/stale`);
+  const hit = await cache.match(key);
+  if (hit) return new Response(hit.body, { headers: { "Content-Type": "application/json", "X-Scout-Cache": "hit", ...cors() } });
+
+  let lines;
+  try {
+    lines = city === "nyc" ? await newYork() : await paris(env);
+  } catch (e) {
+    // TfL-style feeds go down now and then: hand out the last good answer for up to an hour.
+    const stale = await cache.match(staleKey);
+    if (stale) return new Response(stale.body, { headers: { "Content-Type": "application/json", "X-Scout-Cache": "stale", ...cors() } });
+    return json({ error: String(e.message || e) }, city === "paris" && !env.PRIM_API_KEY ? 503 : 502);
+  }
+  const body = JSON.stringify({ city, updated: new Date().toISOString(), source: city === "nyc" ? "MTA" : "Île-de-France Mobilités", lines });
+  await cache.put(key, new Response(body, { headers: { "Content-Type": "application/json", "Cache-Control": `max-age=${TRANSIT_TTL}` } }));
+  await cache.put(staleKey, new Response(body, { headers: { "Content-Type": "application/json", "Cache-Control": "max-age=3600" } }));
+  return new Response(body, { headers: { "Content-Type": "application/json", "X-Scout-Cache": "miss", ...cors() } });
+}
+
+/** Every line with its worst current problem, worst lines first. */
+function summarise(all, problems) {
+  return all.map((line) => {
+    const mine = problems.get(line.id) || [];
+    const level = Math.max(0, ...mine.map((p) => p.level));
+    const statuses = [...new Set(mine.filter((p) => p.level === level).map((p) => p.status))];
+    const reasons = [...new Set(mine.filter((p) => p.reason).sort((a, b) => b.level - a.level).map((p) => p.reason))].slice(0, 3);
+    return { ...line, level, status: level ? statuses.slice(0, 2).join(" · ") : "Good service", reason: level ? reasons.join("\n\n") : "" };
+  });
+}
+
+function add(problems, id, problem) {
+  if (!problems.has(id)) problems.set(id, []);
+  problems.get(id).push(problem);
+}
+
+function plain(html, max = 420) {
+  const t = String(html || "").replace(/<br\s*\/?>|<\/p>/gi, "\n").replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&#39;|&rsquo;/g, "'").replace(/&quot;/g, '"')
+    .replace(/[ \t]+/g, " ").replace(/\n\s*\n+/g, "\n").trim();
+  return t.length > max ? t.slice(0, max - 1).trimEnd() + "…" : t;
+}
+
+// New York: the MTA's subway alerts, in GTFS-realtime's JSON form.
+async function newYork() {
+  const r = await fetch("https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/camsys%2Fsubway-alerts.json", { cf: { cacheTtl: 60 } });
+  if (!r.ok) throw new Error(`MTA answered ${r.status}`);
+  const data = await r.json();
+  const now = Date.now() / 1000;
+  const route = (id) => ({ "6X": "6", "7X": "7", FX: "F", GS: "S", FS: "S", H: "S", SI: "SIR", SS: "SIR" })[id] || id;
+  const known = new Set(NYC_LINES.map((l) => l.id));
+  const problems = new Map();
+  for (const e of data.entity || []) {
+    const a = e.alert;
+    if (!a) continue;
+    const periods = a.active_period || [];
+    const active = !periods.length || periods.some((p) => Number(p.start || 0) <= now && (!Number(p.end) || Number(p.end) > now));
+    if (!active) continue;
+    const type = a["transit_realtime.mercury_alert"]?.alert_type || "Service change";
+    const level = nycLevel(type);
+    if (!level) continue;
+    const en = (a.header_text?.translation || []).find((t) => t.language === "en") || a.header_text?.translation?.[0];
+    const reason = plain(en?.text).replace(/\[(\w+)\]/g, "$1");
+    const status = type.replace(/^Planned\s*-\s*/i, "Planned: ");
+    for (const ie of a.informed_entity || []) {
+      const id = route(ie.route_id);
+      if (known.has(id)) add(problems, id, { level, status, reason });
+    }
+  }
+  return summarise(NYC_LINES, problems);
+}
+
+function nycLevel(type) {
+  const t = type.toLowerCase();
+  if (/station notice|special schedule|information|boarding change|extra service|weekday service|weekend service/.test(t)) return 0;
+  if (/severe|suspend|no (scheduled )?service|no trains/.test(t) && !/part/.test(t)) return 2;
+  return 1;
+}
+
+// Paris: metro and RER disruptions from PRIM's line reports (Navitia), active ones only.
+async function paris(env) {
+  if (!env.PRIM_API_KEY) throw new Error("Paris isn't set up yet (PRIM_API_KEY)");
+  const modes = ["physical_mode:Metro", "physical_mode:RapidTransit"];
+  const answers = await Promise.all(modes.map(async (m) => {
+    const r = await fetch(`https://prim.iledefrance-mobilites.fr/marketplace/v2/navitia/line_reports/physical_modes/${encodeURIComponent(m)}/line_reports?count=100&disable_geojson=true`,
+      { headers: { apikey: env.PRIM_API_KEY.trim(), Accept: "application/json" } });
+    if (!r.ok) throw new Error(`PRIM answered ${r.status}`);
+    return r.json();
+  }));
+  const known = new Map(PARIS_LINES.map((l) => [l.id.toLowerCase(), l.id]));
+  const lineId = (code) => known.get(String(code || "").toLowerCase().replace(/\s+/g, "").replace(/b$/, "bis")) || known.get(String(code || "").toLowerCase());
+  const problems = new Map();
+  for (const data of answers) {
+    const disruptions = new Map((data.disruptions || []).map((d) => [d.id, d]));
+    for (const report of data.line_reports || []) {
+      const id = lineId(report.line?.code || report.line?.name);
+      if (!id) continue;
+      for (const did of disruptionLinks(report)) {
+        const d = disruptions.get(did);
+        if (!d || (d.status && d.status !== "active")) continue;
+        const level = parisLevel(d);
+        if (!level) continue;
+        const title = (d.messages || []).find((m) => (m.channel?.types || []).includes("title"))?.text;
+        const text = title || (d.messages || [])[0]?.text;
+        const works = /travaux/i.test(d.cause || "") || (d.tags || []).some((t) => /travaux/i.test(t));
+        const status = level === 2 ? (works ? "Part closed, planned works" : "Severe disruption") : (works ? "Planned works" : "Disrupted");
+        add(problems, id, { level, status, reason: plain(text) });
+      }
+    }
+  }
+  return summarise(PARIS_LINES, problems);
+}
+
+/** Every disruption a line report points to, on the line itself or on its stops. */
+function disruptionLinks(node, out = new Set()) {
+  if (Array.isArray(node)) node.forEach((n) => disruptionLinks(n, out));
+  else if (node && typeof node === "object") {
+    if (node.type === "disruption" && node.id) out.add(node.id);
+    for (const v of Object.values(node)) if (v && typeof v === "object") disruptionLinks(v, out);
+  }
+  return out;
+}
+
+function parisLevel(d) {
+  const name = String(d.severity?.name || "").toLowerCase();
+  if (/bloquant/.test(name)) return 2;
+  if (/perturb/.test(name)) return 1;
+  if (/information/.test(name)) return 0;
+  const effect = String(d.severity?.effect || d.severity || "").toUpperCase();
+  if (/NO_SERVICE|BLOQUANT/.test(effect)) return 2;
+  if (/SIGNIFICANT_DELAYS|REDUCED_SERVICE|DETOUR|MODIFIED_SERVICE|STOP_MOVED|PERTURB/.test(effect)) return 1;
+  if (/ADDITIONAL_SERVICE|INFORMATION|UNKNOWN_EFFECT|OTHER_EFFECT/.test(effect)) return 0;
+  return 1;
 }

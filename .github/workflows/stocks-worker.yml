@@ -10,6 +10,8 @@ name: Scout stocks list service
 # stocks their AI summary within minutes.
 # Optional: WEATHERKIT_KEY_ID, WEATHERKIT_PRIVATE_KEY and APPLE_TEAM_ID, for the shared weather
 # (one Apple Weather call per area every 30 minutes, shared by everyone nearby).
+# Optional: PRIM_API_KEY (free, from prim.iledefrance-mobilites.fr), for Paris metro status.
+# New York's needs no key.
 on:
   workflow_dispatch:
   push:
@@ -30,6 +32,7 @@ jobs:
       WEATHERKIT_KEY_ID: ${{ secrets.WEATHERKIT_KEY_ID }}
       WEATHERKIT_PRIVATE_KEY: ${{ secrets.WEATHERKIT_PRIVATE_KEY }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      PRIM_API_KEY: ${{ secrets.PRIM_API_KEY }}
 
     steps:
       - name: Checkout
@@ -127,3 +130,19 @@ jobs:
           else
             echo "::notice::Shared weather is off (add WEATHERKIT_KEY_ID, WEATHERKIT_PRIVATE_KEY and APPLE_TEAM_ID): each iPhone asks Apple Weather itself."
           fi
+
+          # Metro status: New York needs no key, Paris needs PRIM_API_KEY.
+          if [ -n "$PRIM_API_KEY" ]; then
+            printf %s "$PRIM_API_KEY" | tr -d '[:space:]' | $W secret put PRIM_API_KEY
+            sleep 5
+          else
+            echo "::notice::Paris metro status is off (add PRIM_API_KEY): Paris shows as unavailable in the app."
+          fi
+          for city in nyc paris; do
+            code=$(curl -s -o transit.json -w "%{http_code}" "$url/transit/$city")
+            if [ "$code" = 200 ]; then
+              echo "::notice::$city metro status: $(python3 -c "import json; d=json.load(open('transit.json')); bad=[l['name']+': '+l['status'] for l in d['lines'] if l['level']]; print(f\"{len(d['lines'])} lines, \" + ('; '.join(bad) if bad else 'good service on all'))")"
+            else
+              echo "::warning::$city metro status answered $code: $(head -c 200 transit.json)"
+            fi
+          done

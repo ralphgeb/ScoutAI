@@ -107,6 +107,7 @@ export default {
 
     const transitCity = url.pathname.match(/^\/transit\/(nyc|paris)$/)?.[1];
     if (transitCity && request.method === "GET") {
+      if (transitCity === "paris" && url.searchParams.get("debug") === "1") return json(await parisDebug(env));
       return transit(transitCity, env);
     }
 
@@ -393,4 +394,28 @@ function parisLevel(d) {
   if (/SIGNIFICANT_DELAYS|REDUCED_SERVICE|DETOUR|MODIFIED_SERVICE|STOP_MOVED|PERTURB/.test(effect)) return 1;
   if (/ADDITIONAL_SERVICE|INFORMATION|UNKNOWN_EFFECT|OTHER_EFFECT/.test(effect)) return 0;
   return 1;
+}
+
+/** What PRIM says for each line, for checking how its disruptions are read. Not cached. */
+async function parisDebug(env) {
+  if (!env.PRIM_API_KEY) return { error: "no key" };
+  const out = [];
+  for (const m of ["physical_mode:Metro", "physical_mode:RapidTransit"]) {
+    const r = await fetch(`https://prim.iledefrance-mobilites.fr/marketplace/v2/navitia/line_reports/physical_modes/${encodeURIComponent(m)}/line_reports?count=100&disable_geojson=true`,
+      { headers: { apikey: env.PRIM_API_KEY.trim(), Accept: "application/json" } });
+    const data = await r.json();
+    const disruptions = new Map((data.disruptions || []).map((d) => [d.id, d]));
+    for (const report of data.line_reports || []) {
+      const onLine = new Set((report.line?.links || []).filter((l) => l.type === "disruption").map((l) => l.id));
+      const objects = (report.pt_objects || []).map((o) => ({ type: o.embedded_type, ids: [...disruptionLinks(o)] }));
+      const all = disruptionLinks(report);
+      out.push({ line: report.line?.code, name: report.line?.name, onLine: onLine.size, objectTypes: [...new Set(objects.map((o) => o.type))],
+        disruptions: [...all].map((id) => { const d = disruptions.get(id) || {}; return {
+          where: onLine.has(id) ? "line" : (objects.find((o) => o.ids.includes(id))?.type || "?"), status: d.status,
+          severity: d.severity?.name, effect: d.severity?.effect, cause: d.cause, tags: d.tags, category: d.category,
+          title: plain((d.messages || []).find((x) => (x.channel?.types || []).includes("title"))?.text || d.messages?.[0]?.text, 90),
+          impacted: (d.impacted_objects || []).map((i) => i.pt_object?.embedded_type).slice(0, 3) }; }) });
+    }
+  }
+  return out;
 }

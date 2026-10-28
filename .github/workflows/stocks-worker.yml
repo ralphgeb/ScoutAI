@@ -138,6 +138,14 @@ jobs:
           else
             echo "::notice::Paris metro status is off (add PRIM_API_KEY): Paris shows as unavailable in the app."
           fi
+          if [ -n "$PRIM_API_KEY" ]; then
+            curl -s "$url/transit/paris?debug=1" | python3 -c "
+          import json,sys
+          for l in json.load(sys.stdin):
+              print(l['line'], l['name'], 'onLine', l['onLine'], l['objectTypes'])
+              for d in l['disruptions'][:6]: print('   ', d)
+          " | head -c 20000 || true
+          fi
           for city in nyc paris; do
             code=$(curl -s -o transit.json -w "%{http_code}" "$url/transit/$city")
             if [ "$code" = 200 ]; then

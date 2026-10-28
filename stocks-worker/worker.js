@@ -339,7 +339,7 @@ function nycLevel(type) {
   return 1;
 }
 
-// Paris: metro and RER disruptions from PRIM's line reports (Navitia), active ones only.
+// Paris: metro and RER disruptions from PRIM's line reports (Navitia): active ones on the line itself.
 async function paris(env) {
   if (!env.PRIM_API_KEY) throw new Error("Paris isn't set up yet (PRIM_API_KEY)");
   const modes = ["physical_mode:Metro", "physical_mode:RapidTransit"];
@@ -357,7 +357,9 @@ async function paris(env) {
     for (const report of data.line_reports || []) {
       const id = lineId(report.line?.code || report.line?.name);
       if (!id) continue;
-      for (const did of disruptionLinks(report)) {
+      // Only what's on the line itself: PRIM also lists every station's lift and escalator outages.
+      const onLine = (report.line?.links || []).filter((l) => l.type === "disruption").map((l) => l.id);
+      for (const did of onLine) {
         const d = disruptions.get(did);
         if (!d || (d.status && d.status !== "active")) continue;
         const level = parisLevel(d);
@@ -365,22 +367,13 @@ async function paris(env) {
         const title = (d.messages || []).find((m) => (m.channel?.types || []).includes("title"))?.text;
         const text = title || (d.messages || [])[0]?.text;
         const works = /travaux/i.test(d.cause || "") || (d.tags || []).some((t) => /travaux/i.test(t));
-        const status = level === 2 ? (works ? "Part closed, planned works" : "Severe disruption") : (works ? "Planned works" : "Disrupted");
-        add(problems, id, { level, status, reason: plain(text) });
+        const status = level === 2 ? (works ? "Closed for works" : "Suspended") : (works ? "Planned works" : "Disrupted");
+        // "Métro 7 : Panne de signalisation - Trafic très perturbé" → "Panne de signalisation - Trafic très perturbé"
+        add(problems, id, { level, status, reason: plain(text).replace(/^(Métro|RER|Ligne)\s*\w+\s*:\s*/i, "") });
       }
     }
   }
   return summarise(PARIS_LINES, problems);
-}
-
-/** Every disruption a line report points to, on the line itself or on its stops. */
-function disruptionLinks(node, out = new Set()) {
-  if (Array.isArray(node)) node.forEach((n) => disruptionLinks(n, out));
-  else if (node && typeof node === "object") {
-    if (node.type === "disruption" && node.id) out.add(node.id);
-    for (const v of Object.values(node)) if (v && typeof v === "object") disruptionLinks(v, out);
-  }
-  return out;
 }
 
 function parisLevel(d) {
@@ -394,3 +387,4 @@ function parisLevel(d) {
   if (/ADDITIONAL_SERVICE|INFORMATION|UNKNOWN_EFFECT|OTHER_EFFECT/.test(effect)) return 0;
   return 1;
 }
+

@@ -109,18 +109,17 @@ export default {
     return json({ service: "Scout", endpoints: ["POST /add", "GET /list", "GET /stocks.json", "GET /prices.json", "GET /weather?lat=&lon=&tz="] });
   },
 
-  // Every 10 minutes: start the quick update if stocks were added while the last one was recent.
+  // Every 10 minutes: ask ScoutAI's workflow to do whatever is due (the 6:00 briefing, prices every
+  // 30 minutes, the morning notification), because GitHub's own schedule often skips most of its
+  // runs. And start the quick update if stocks were added while the last one was recent.
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(runIfDue(env));
+    ctx.waitUntil(Promise.all([dispatch(env, { mode: "auto" }), runIfDue(env)]));
   },
 };
 
-/** Starts ScoutAI's quick stocks update when something is waiting and the last run was 10+ minutes ago. */
-async function runIfDue(env) {
+/** Starts ScoutAI's update workflow with these inputs. */
+async function dispatch(env, inputs) {
   if (!env.DISPATCH_TOKEN) return false;
-  if (!(await env.REQUESTS.get("run:pending"))) return false;
-  const last = await env.REQUESTS.get("run:last");
-  if (last && Date.now() - Date.parse(last) < RUN_GAP_MS) return false;
   const r = await fetch(WORKFLOW, {
     method: "POST",
     headers: {
@@ -129,9 +128,18 @@ async function runIfDue(env) {
       "User-Agent": "scout-stocks",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ ref: "main", inputs: { mode: "stocks", briefing: "no" } }),
+    body: JSON.stringify({ ref: "main", inputs }),
   });
-  if (!r.ok) return false;
+  return r.ok;
+}
+
+/** Starts ScoutAI's quick stocks update when something is waiting and the last run was 10+ minutes ago. */
+async function runIfDue(env) {
+  if (!env.DISPATCH_TOKEN) return false;
+  if (!(await env.REQUESTS.get("run:pending"))) return false;
+  const last = await env.REQUESTS.get("run:last");
+  if (last && Date.now() - Date.parse(last) < RUN_GAP_MS) return false;
+  if (!(await dispatch(env, { mode: "stocks", briefing: "no" }))) return false;
   await env.REQUESTS.put("run:last", new Date().toISOString(), { expirationTtl: 86400 });
   await env.REQUESTS.delete("run:pending");
   return true;

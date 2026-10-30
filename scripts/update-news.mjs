@@ -75,6 +75,24 @@ export const TOPICS = [
 // Where a story mainly happens, so the app can follow the UK, the US, Europe or Asia.
 // Global = worldwide, or another part of the world.
 export const REGIONS = ['UK', 'US', 'Europe', 'Asia', 'Global'];
+// How much each region counts when stories are picked: most Scout readers are in the US and the UK.
+const REGION_WEIGHT = { US: 4, UK: 3, Global: 3, Europe: 2, Asia: 2 };
+
+// Google News searches and editions bring in every kind of site, so from those only established
+// outlets are kept (the names Google News gives after the headline).
+export const REPUTABLE = new RegExp('^(the )?(' + [
+  'Reuters', 'Associated Press', 'AP News', 'New York Times', 'Wall Street Journal', 'WSJ', 'Washington Post', 'Bloomberg',
+  'CNN', 'NBC News', 'CBS News', 'ABC News', 'NPR', 'PBS', 'Politico', 'POLITICO', 'Axios', 'The Hill', 'USA Today', 'USA TODAY',
+  'Los Angeles Times', 'Semafor', 'Time(?=$)', 'The Atlantic', 'Fortune', 'Forbes', 'Business Insider', "Barron's", 'MarketWatch',
+  'Financial Times', 'Economist', 'BBC', 'Guardian(?=$)', 'Sky News', 'Telegraph', 'Times(?=$)', 'Independent(?=$)', 'Evening Standard', 'City A\\.M\\.',
+  'The Verge', 'Wired', 'WIRED', 'TechCrunch', 'Ars Technica', 'Engadget', 'CNET', 'ZDNET', 'MIT Technology Review', 'The Information',
+  'DW(?=$)', 'Deutsche Welle', 'France 24', 'FRANCE 24', 'Euronews', 'euronews', 'Le Monde', 'Der Spiegel', 'DER SPIEGEL', 'Irish Times', 'RTE',
+  'Al Jazeera', 'South China Morning Post', 'Nikkei Asia', 'Straits Times', 'The Hindu', 'Hindustan Times', 'Times of India',
+  'Economic Times', 'NDTV', 'Mint(?=$)', 'Business Standard', 'Japan Times', 'Kyodo', 'Yonhap', 'Korea Herald', 'Korea JoongAng Daily',
+  'CNA(?=$)', 'Channel NewsAsia', 'ABC \\(Australia\\)', 'ABC News \\(Australia\\)', 'Sydney Morning Herald', 'Caixin',
+  'Business of Fashion', 'Vogue Business', 'Vogue(?=$)', 'WWD', 'Variety', 'Hollywood Reporter', 'CoinDesk', 'Nature(?=$)', 'Science(?=$)'
+].join('|') + ')( |$|:|,)', 'i');
+
 export const normRegion = (r) => REGIONS.find((x) => x.toLowerCase() === String(r || '').toLowerCase()) || 'Global';
 
 // Sections in the app's News tab. Older data used finer sections.
@@ -157,6 +175,8 @@ async function fetchFeed(feed) {
       if (/news\.google\.com/.test(feed.url)) {
         const m = title.match(/^(.*) - ([^-]{2,60})$/);
         if (m) { title = m[1].trim(); source = m[2].trim(); }
+        // open searches and editions (no site: in the query): established outlets only
+        if (!/site(:|%3A)/i.test(feed.url) && !REPUTABLE.test(source)) title = '';
       }
       return {
         title,
@@ -195,15 +215,33 @@ export async function collect(feeds, seen) {
 /** Newest first, but taking each section-and-region in turn, so the triage cap can't be filled
  *  by the busiest feeds (more UK and US outlets than Asian ones, say). */
 export function fairOrder(articles) {
-  const groups = new Map();
+  const bySection = new Map();
   for (const a of articles) {
-    const k = `${a.section}|${a.region || 'Global'}`;
-    if (!groups.has(k)) groups.set(k, []);
-    groups.get(k).push(a);
+    if (!bySection.has(a.section)) bySection.set(a.section, []);
+    bySection.get(a.section).push(a);
   }
-  const queues = [...groups.values()];
+  const queues = [...bySection.values()].map((list) => weightedTurns(list, (a) => a.region || 'Global', (q) => q));
   const out = [];
   while (queues.some((q) => q.length)) for (const q of queues) if (q.length) out.push(q.shift());
+  return out;
+}
+
+/** Takes items region by region, more often from regions that weigh more (US 4, UK and Global 3,
+ *  Europe and Asia 2), so the US leads without the others disappearing. Within a region, `inner`
+ *  orders the items (e.g. outlets in turn). Smooth weighted round robin. */
+export function weightedTurns(list, regionOf, inner) {
+  const byRegion = new Map();
+  for (const x of list) { const r = regionOf(x); if (!byRegion.has(r)) byRegion.set(r, []); byRegion.get(r).push(x); }
+  const queues = [...byRegion.entries()].map(([r, l]) => ({ w: REGION_WEIGHT[r] || 2, credit: 0, items: inner(l) }));
+  const out = [];
+  while (queues.some((q) => q.items.length)) {
+    const live = queues.filter((q) => q.items.length);
+    const total = live.reduce((n, q) => n + q.w, 0);
+    for (const q of live) q.credit += q.w;
+    const best = live.reduce((a, b) => (b.credit > a.credit ? b : a));
+    best.credit -= total;
+    out.push(best.items.shift());
+  }
   return out;
 }
 
@@ -341,7 +379,7 @@ const ANALYSIS_TOOL = {
             topics: { type: 'array', items: { type: 'string', enum: TOPICS } },
             region: { type: 'string', enum: REGIONS, description: 'Where the story mainly happens or matters most: UK, US, Europe (EU and the rest of Europe, not the UK), Asia (including India, Australia and the Pacific), or Global (worldwide, several regions, or the Middle East, Africa and Latin America).' },
             overall_impact: { type: 'string', enum: ['none', 'low', 'medium', 'high'], description: 'Likely market impact (if a rumour: if it turns out true).' },
-            importance: { type: 'integer', description: 'How important this story is for a general reader of its section, 1-10: 9-10 = major news everyone is talking about (big launches, major deals, elections, wars, central bank moves); 6-8 = notable; 3-5 = routine; 1-2 = minor (reviews, how-tos, small updates). Be strict.' },
+            importance: { type: 'integer', description: 'How important this story is for a general reader of its section, 1-10: 9-10 = major news everyone is talking about (big launches, major deals, elections, wars, central bank moves); 6-8 = notable; 3-5 = routine; 1-2 = minor (reviews, how-tos, small updates). Be strict. Readers are mostly in the US and the UK: national news there counts more than the same size of story elsewhere, and local or regional stories from anywhere score low.' },
             market_take: { type: 'string', description: 'One short sentence on how this could affect investors or the stocks below. Empty string if there is no market angle.' },
             stocks: {
               type: 'array',
@@ -874,8 +912,8 @@ export function pickFair(groups, max) {
   if (groups.length <= max) return groups;
   const bySection = {};
   for (const g of groups) (bySection[g.art.section] ||= []).push(g);
-  // within a section, take regions in turn, and within a region outlets in turn (newest first from each),
-  // so every region gets its share of the stories analysed
+  // within a section, take regions in turn (the US most often, then the UK, then Europe and Asia),
+  // and within a region outlets in turn (newest first from each)
   const turns = (list, key) => {
     const by = new Map();
     for (const g of list) { const k = key(g); if (!by.has(k)) by.set(k, []); by.get(k).push(g); }
@@ -884,14 +922,7 @@ export function pickFair(groups, max) {
     while (queues.some((q) => q.length)) for (const q of queues) if (q.length) out.push(q.shift());
     return out;
   };
-  const roundRobin = (list) => {
-    const byRegion = new Map();
-    for (const g of list) { const r = g.art.region || 'Global'; if (!byRegion.has(r)) byRegion.set(r, []); byRegion.get(r).push(g); }
-    const queues = [...byRegion.values()].map((l) => turns(l, (g) => g.art.source));
-    const out = [];
-    while (queues.some((q) => q.length)) for (const q of queues) if (q.length) out.push(q.shift());
-    return out;
-  };
+  const roundRobin = (list) => weightedTurns(list, (g) => g.art.region || 'Global', (l) => turns(l, (g) => g.art.source));
   const ordered = Object.fromEntries(Object.entries(bySection).map(([k, v]) => [k, roundRobin(v)]));
   const picked = [];
   for (const [sec, share] of Object.entries(SECTION_SHARE)) picked.push(...(ordered[sec] || []).splice(0, Math.round(max * share)));
@@ -1228,14 +1259,19 @@ const SECTION_TOOL = {
     lead_story_id: { type: 'string', description: 'Id of the single most important story right now.' },
     title: { type: 'string', description: 'The main topic of the day as a headline, max 70 chars, in your own words.' },
     notification: { type: 'string', description: 'A catchy one-line teaser of the biggest story for a phone notification, max 110 characters, in your own words, no emoji, no clickbait: make the reader want to open the app.' },
-    summary: { type: 'string', description: 'A proper overview of the main events in this area today: 2-3 short paragraphs separated by a blank line (about 150-220 words), covering the biggest stories, what they mean and how they connect. Your own words; never invent facts.' },
+    summary: { type: 'string', description: 'A proper overview of the main events in this area today: 2-3 short paragraphs separated by a blank line (about 150-220 words), covering the biggest stories, what they mean and how they connect. The first paragraph must stand on its own as the lead (about 50-70 words): the app shows it first, above the highlights. Your own words; never invent facts.' },
+    highlights: { type: 'array', description: '4-6 highlights shown as cards under the lead paragraph: the rest of the day in short, easy-to-scan pieces.', items: { type: 'object', properties: {
+      label: { type: 'string', description: 'A 1-3 word label, e.g. "US", "Europe", "Markets", "Oil", "AI chips".' },
+      text: { type: 'string', description: 'One or two crisp sentences, max 200 chars, in your own words.' },
+      story_id: { type: 'string', description: 'The story it is about, from the list.' }
+    }, required: ['label', 'text', 'story_id'] } },
     points: { type: 'array', description: '4-6 other key things happening, each tied to a story.', items: { type: 'object', properties: {
       story_id: { type: 'string' }, text: { type: 'string', description: 'One sentence, max 120 chars.' }
     }, required: ['story_id', 'text'] } },
     movers: { type: 'array', description: 'Up to 6 stocks, indices, currencies or commodities most affected by today\u2019s news in this area (Yahoo Finance symbols).', items: { type: 'object', properties: {
       ticker: { type: 'string' }, name: { type: 'string' }, direction: { type: 'string', enum: ['up', 'down', 'mixed'] }, note: { type: 'string', description: 'Max 80 chars.' }
     }, required: ['ticker', 'name', 'direction', 'note'] } }
-  }, required: ['lead_story_id', 'title', 'notification', 'summary', 'points', 'movers'] }
+  }, required: ['lead_story_id', 'title', 'notification', 'summary', 'highlights', 'points', 'movers'] }
 };
 const SECTION_FOCUS = {
   Tech: 'tech, AI, gadgets, big tech companies, startups and venture capital',
@@ -1259,7 +1295,7 @@ export async function makeSectionBriefs(stories, apiKey, now = new Date()) {
     try {
       const x = await callClaude({
         model: BRIEFING_MODEL, max_tokens: 3500,
-        system: `You are the ${sec} editor of a news app read in the UK, the US, Europe and Asia. Using only the stories given, say what the main topic in ${SECTION_FOCUS[sec]} is right now and summarise what is happening. ${global ? 'Cover every region: after the biggest story, give the US, the UK, Europe and Asia a short paragraph each where there is real news (4-5 short paragraphs, about 250-350 words in all), and spread the points across regions. ' : ''}Neutral, British English, your own words. Call record_section_brief once.`,
+        system: `You are the ${sec} editor of a news app read in the UK, the US, Europe and Asia. Using only the stories given, say what the main topic in ${SECTION_FOCUS[sec]} is right now and summarise what is happening. ${global ? 'Cover every region, in this order of weight: the US, the UK, Europe, Asia. Give each region with real news its own highlight, labelled with the region, and spread the points across regions. ' : ''}Neutral, British English, your own words. Call record_section_brief once.`,
         tools: [SECTION_TOOL], tool_choice: { type: 'tool', name: 'record_section_brief' },
         messages: [{ role: 'user', content: pool.map((s) => `${s.id} | ${s.region || 'Global'} | ${s.sources.length} outlet(s) | ${s.status} | ${s.headline || s.claim}\n   ${s.summary}${(s.stocks || []).length ? '\n   Stocks: ' + s.stocks.map((k) => `${k.ticker} ${k.direction}`).join(', ') : ''}`).join('\n') }]
       }, apiKey);
@@ -1268,7 +1304,8 @@ export async function makeSectionBriefs(stories, apiKey, now = new Date()) {
         lead_story_id: ids.has(x.lead_story_id) ? x.lead_story_id : pool[0].id,
         title: trim(x.title, 100),
         notification: trim(x.notification, 140),
-        summary: trimKeepParas(x.summary, global ? 3200 : 2000),
+        summary: trimKeepParas(x.summary, 2000),
+        highlights: (x.highlights || []).slice(0, 6).map((h) => ({ label: trim(h.label, 24), text: trim(h.text, 240), story_id: ids.has(h.story_id) ? h.story_id : null })).filter((h) => h.label && h.text),
         points: (x.points || []).filter((p) => ids.has(p.story_id)).slice(0, 6).map((p) => ({ story_id: p.story_id, text: trim(p.text, 160) })),
         movers: (x.movers || []).filter((m) => /^[A-Z0-9.\-^=]{1,15}$/i.test(m.ticker || '')).slice(0, 6).map((m) => ({
           ticker: m.ticker.toUpperCase(), name: trim(m.name, 50), direction: ['up', 'down', 'mixed'].includes(m.direction) ? m.direction : 'mixed', note: trim(m.note, 100)

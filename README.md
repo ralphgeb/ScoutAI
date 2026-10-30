@@ -1,6 +1,6 @@
 # Rumour Radar
 
-Your morning and evening briefing on tech, AI, gadgets and markets, as an iPhone app. It reads about 100 tech, finance, world and fashion news sites. Every story gets its picture and an AI summary with key points, plus the stocks it could move. Rumours get their own tab with AI odds on how likely each one is to be true.
+Your morning and evening briefing on tech, AI, gadgets and markets, as an iPhone app. It reads about 150 tech, finance, world and fashion news sites from the UK, the US, Europe and Asia, and tags every story with its region. Every story gets its picture and an AI summary with key points, plus the stocks it could move. Rumours get their own tab with AI odds on how likely each one is to be true.
 
 ## Already using an older version? Update (about 10 minutes)
 
@@ -233,7 +233,7 @@ To change a file, open it on GitHub, click the **pencil** icon to edit, then **C
 
 GitHub and the hosting are free. The AI uses Claude Haiku, the cheapest model.
 
-The AI reads each article and writes a summary with key points (no long write-ups, which keeps the cost down). Scheduled updates use Anthropic's batch queue, which costs half as much but can take a while, so they start at 6:00 each morning. On the other hand, updates now run twice a day (plus whenever you tap refresh) instead of every 30 minutes. Each daily update analyses up to 152 new stories, 38 for each of Tech, Finance, World and Fashion, and the app keeps 400 stories (100 per section).
+The AI reads each article and writes a summary with key points (no long write-ups, which keeps the cost down). Scheduled updates use Anthropic's batch queue, which costs half as much but can take a while, so they start at 6:00 each morning. On the other hand, updates now run twice a day (plus whenever you tap refresh) instead of every 30 minutes. Each daily update analyses up to 200 new stories, 50 for each of Tech, Finance, World and Fashion, shared fairly between the UK, the US, Europe and Asia (more sources only means better picks: the cap keeps the cost the same), and the app keeps 520 stories (130 per section). The World and Finance summaries cover every region.
 
 Check **console.anthropic.com → Usage** after the first day to see the real cost, and keep a monthly spend limit set there. To spend less, lower `MAX_NEW_PER_RUN` near the top of `scripts/update-news.mjs`.
 

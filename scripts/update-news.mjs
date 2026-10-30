@@ -18,8 +18,8 @@
 // You normally never need to touch this file. Settings you might change:
 const MODEL = process.env.ANTHROPIC_MODEL || 'claude-haiku-5-5';
 const BRIEFING_MODEL = process.env.BRIEFING_MODEL || MODEL;
-const MAX_NEW_PER_RUN = Number(process.env.MAX_NEW_PER_RUN || 152); // stories analysed per run: 38 for each of the 4 sections (caps cost)
-const MAX_TRIAGE = 1200;       // headlines checked in the quick first pass
+const MAX_NEW_PER_RUN = Number(process.env.MAX_NEW_PER_RUN || 200); // stories analysed per run: 50 for each of the 4 sections (caps cost)
+const MAX_TRIAGE = 1600;       // headlines checked in the quick first pass (cheap: headlines only), shared fairly between sections and regions
 const TRIAGE_BATCH = 60;       // headlines per quick-pass request
 const BATCH_SIZE = 6;          // articles per full-analysis request
 // Batch mode (scheduled updates): requests go through Anthropic's Message Batches
@@ -29,9 +29,9 @@ const BATCH_WAIT_MIN = Number(process.env.BATCH_WAIT_MIN || 25); // after this, 
 const PARALLEL = USE_BATCH ? 100 : 3; // AI requests running at the same time
 const MAX_ARTICLE_AGE_H = 30;  // ignore articles older than this
 const FASHION_AGE_H = 72;      // fashion sites publish less often, so look further back
-const SECTION_MIN = 100;       // each section's fair share of MAX_STORIES
+const SECTION_MIN = 130;       // each section's fair share of MAX_STORIES
 const KEEP_DAYS = 3;           // drop stories first published more than this many days ago (72 hours)
-const MAX_STORIES = 400;       // stories kept in the app, shared equally between sections
+const MAX_STORIES = 520;       // stories kept in the app, shared equally between sections
 const MAX_SEEN = 8000;         // how many article links to remember
 const ARTICLE_CHARS = 6000;    // how much of each article the AI reads
 const UPGRADE_MAX = 20;        // older stories per run that get key points added
@@ -71,6 +71,11 @@ export const TOPICS = [
   'World politics', 'Conflict & security', 'Elections', 'Trade & tariffs', 'Central banks',
   'Commodities', 'Climate', 'Fashion & Luxury', 'Beauty', 'Designers & Shows', 'Other'
 ];
+
+// Where a story mainly happens, so the app can follow the UK, the US, Europe or Asia.
+// Global = worldwide, or another part of the world.
+export const REGIONS = ['UK', 'US', 'Europe', 'Asia', 'Global'];
+export const normRegion = (r) => REGIONS.find((x) => x.toLowerCase() === String(r || '').toLowerCase()) || 'Global';
 
 // Sections in the app's News tab. Older data used finer sections.
 export const normSection = (s) => (/^(markets|finance)$/i.test(s || '') ? 'Finance' : /^world$/i.test(s || '') ? 'World' : /^fashion$/i.test(s || '') ? 'Fashion' : 'Tech');
@@ -158,6 +163,7 @@ async function fetchFeed(feed) {
         link: cleanLink(it.link || ''),
         source,
         section: normSection(feed.section),
+        region: normRegion(feed.region),
         published: it.isoDate || new Date().toISOString(),
         snippet: trim(it.contentSnippet, 600),
         image: it.image || ''
@@ -183,7 +189,22 @@ export async function collect(feeds, seen) {
     if (new Date(a.published).getTime() < (a.section === 'Fashion' ? fashionCutoff : cutoff)) continue;
     unique.set(a.link, a);
   }
-  return [...unique.values()].sort((a, b) => b.published.localeCompare(a.published));
+  return fairOrder([...unique.values()].sort((a, b) => b.published.localeCompare(a.published)));
+}
+
+/** Newest first, but taking each section-and-region in turn, so the triage cap can't be filled
+ *  by the busiest feeds (more UK and US outlets than Asian ones, say). */
+export function fairOrder(articles) {
+  const groups = new Map();
+  for (const a of articles) {
+    const k = `${a.section}|${a.region || 'Global'}`;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(a);
+  }
+  const queues = [...groups.values()];
+  const out = [];
+  while (queues.some((q) => q.length)) for (const q of queues) if (q.length) out.push(q.shift());
+  return out;
 }
 
 // Articles whose page says they were published long before the feed claims.
@@ -318,6 +339,7 @@ const ANALYSIS_TOOL = {
             likelihood_reason: { type: 'string', description: 'One or two sentences on why you gave that likelihood. Empty for news.' },
             signals: { type: 'array', items: { type: 'string' }, description: 'Short credibility signals for rumours, e.g. "Reliable source: Bloomberg", "Single anonymous source", "Company declined to comment". Empty for news.' },
             topics: { type: 'array', items: { type: 'string', enum: TOPICS } },
+            region: { type: 'string', enum: REGIONS, description: 'Where the story mainly happens or matters most: UK, US, Europe (EU and the rest of Europe, not the UK), Asia (including India, Australia and the Pacific), or Global (worldwide, several regions, or the Middle East, Africa and Latin America).' },
             overall_impact: { type: 'string', enum: ['none', 'low', 'medium', 'high'], description: 'Likely market impact (if a rumour: if it turns out true).' },
             importance: { type: 'integer', description: 'How important this story is for a general reader of its section, 1-10: 9-10 = major news everyone is talking about (big launches, major deals, elections, wars, central bank moves); 6-8 = notable; 3-5 = routine; 1-2 = minor (reviews, how-tos, small updates). Be strict.' },
             market_take: { type: 'string', description: 'One short sentence on how this could affect investors or the stocks below. Empty string if there is no market angle.' },
@@ -337,7 +359,7 @@ const ANALYSIS_TOOL = {
               }
             }
           },
-          required: ['article_index', 'keep', 'same_story_as', 'status', 'claim', 'summary', 'key_points', 'likelihood', 'likelihood_reason', 'signals', 'topics', 'overall_impact', 'importance', 'market_take', 'stocks']
+          required: ['article_index', 'keep', 'same_story_as', 'status', 'claim', 'summary', 'key_points', 'likelihood', 'likelihood_reason', 'signals', 'topics', 'region', 'overall_impact', 'importance', 'market_take', 'stocks']
         }
       }
     },
@@ -350,6 +372,8 @@ const SYSTEM = `You are the analysis engine of a news app with four sections: Te
 Writing: clear, neutral, British English, no hype. Everything must be in your own words; never copy sentences from the articles and never invent facts, figures or quotes.
 
 For confirmed news: status "news", likelihood null, likelihood_reason "" and signals [].
+
+Readers are in the UK, the US, Europe and Asia, so write for an international reader: say which country you mean, and give amounts in the local currency.
 
 Estimating likelihood (be calibrated, not dramatic):
 - Track record of the outlet/reporter matters most. Bloomberg, Reuters, FT, WSJ, The Information and reporters like Mark Gurman are right most of the time (often 70-90%). Supply-chain analysts (e.g. Ming-Chi Kuo) are decent on hardware (55-75%). Unknown leakers, social posts and tabloids are low (10-40%).
@@ -610,6 +634,7 @@ export function sanitise(an) {
     likelihood_reason: trim(an.likelihood_reason, 400),
     signals: (an.signals || []).map((s) => trim(s, 80)).filter(Boolean).slice(0, 6),
     topics: topics.length ? topics : ['Other'],
+    region: normRegion(an.region),
     overall_impact: IMPACT_RANK[an.overall_impact] !== undefined ? an.overall_impact : 'low',
     importance: Math.max(1, Math.min(10, Math.round(Number(an.importance) || 4))),
     market_take: trim(an.market_take, 240),
@@ -659,6 +684,7 @@ export function mergeBatch(stories, batch, analyses, now = new Date().toISOStrin
       if (clean.key_points.join(' ').length > (target.key_points || []).join(' ').length * 1.3) target.key_points = clean.key_points;
       target.signals = [...new Set([...clean.signals, ...(target.signals || [])])].slice(0, 8);
       target.topics = [...new Set([...target.topics, ...clean.topics])].filter((t) => t !== 'Other' || target.topics.length === 1);
+      if (!target.region || target.region === 'Global') target.region = clean.region;
       if (IMPACT_RANK[clean.overall_impact] > IMPACT_RANK[target.overall_impact]) target.overall_impact = clean.overall_impact;
       if ((clean.importance || 0) > (target.importance || 0)) target.importance = clean.importance;
       if (!target.image && art.image) target.image = art.image;
@@ -848,11 +874,20 @@ export function pickFair(groups, max) {
   if (groups.length <= max) return groups;
   const bySection = {};
   for (const g of groups) (bySection[g.art.section] ||= []).push(g);
-  // within a section, take outlets in turn (newest first from each)
+  // within a section, take regions in turn, and within a region outlets in turn (newest first from each),
+  // so every region gets its share of the stories analysed
+  const turns = (list, key) => {
+    const by = new Map();
+    for (const g of list) { const k = key(g); if (!by.has(k)) by.set(k, []); by.get(k).push(g); }
+    const queues = [...by.values()];
+    const out = [];
+    while (queues.some((q) => q.length)) for (const q of queues) if (q.length) out.push(q.shift());
+    return out;
+  };
   const roundRobin = (list) => {
-    const bySrc = new Map();
-    for (const g of list) { if (!bySrc.has(g.art.source)) bySrc.set(g.art.source, []); bySrc.get(g.art.source).push(g); }
-    const queues = [...bySrc.values()];
+    const byRegion = new Map();
+    for (const g of list) { const r = g.art.region || 'Global'; if (!byRegion.has(r)) byRegion.set(r, []); byRegion.get(r).push(g); }
+    const queues = [...byRegion.values()].map((l) => turns(l, (g) => g.art.source));
     const out = [];
     while (queues.some((q) => q.length)) for (const q of queues) if (q.length) out.push(q.shift());
     return out;
@@ -1204,8 +1239,8 @@ const SECTION_TOOL = {
 };
 const SECTION_FOCUS = {
   Tech: 'tech, AI, gadgets, big tech companies, startups and venture capital',
-  Finance: 'markets, companies, earnings, deals, central banks and the economy',
-  World: 'major world and political news, and what it could mean for markets',
+  Finance: 'markets, companies, earnings, deals, central banks and the economy in the US, the UK, Europe and Asia',
+  World: 'major world and political news in the US, the UK, Europe and Asia, and what it could mean for markets',
   Fashion: 'luxury and high fashion: luxury houses and groups, major designers and creative directors, the big fashion weeks, and the business of luxury'
 };
 
@@ -1214,23 +1249,26 @@ export async function makeSectionBriefs(stories, apiKey, now = new Date()) {
   const score = (s) => (s.sources?.length || 1) * 2 + (IMPACT_RANK[s.overall_impact] || 0) * 2 + (s.image ? 1 : 0);
   const out = {};
   await runParallel(Object.keys(SECTION_FOCUS), PARALLEL, async (sec) => {
-    const pool = stories.filter((s) => normSection(s.section) === sec && ((s.first_published || s.first_seen || '') >= since || (s.last_updated || '') >= since))
-      .sort((a, b) => score(b) - score(a)).slice(0, 60);
+    const recent = stories.filter((s) => normSection(s.section) === sec && ((s.first_published || s.first_seen || '') >= since || (s.last_updated || '') >= since))
+      .sort((a, b) => score(b) - score(a));
+    const global = sec === 'World' || sec === 'Finance';
+    // World and Finance cover every region: the biggest stories from each, then the rest
+    const pool = global ? fairOrder(recent.map((s) => ({ ...s, region: s.region || 'Global' }))).slice(0, 80) : recent.slice(0, 60);
     if (pool.length < 3) return;
     const ids = new Set(pool.map((s) => s.id));
     try {
       const x = await callClaude({
         model: BRIEFING_MODEL, max_tokens: 3500,
-        system: `You are the ${sec} editor of a news app. Using only the stories given, say what the main topic in ${SECTION_FOCUS[sec]} is right now and summarise what is happening. Neutral, British English, your own words. Call record_section_brief once.`,
+        system: `You are the ${sec} editor of a news app read in the UK, the US, Europe and Asia. Using only the stories given, say what the main topic in ${SECTION_FOCUS[sec]} is right now and summarise what is happening. ${global ? 'Cover every region: after the biggest story, give the US, the UK, Europe and Asia a short paragraph each where there is real news (4-5 short paragraphs, about 250-350 words in all), and spread the points across regions. ' : ''}Neutral, British English, your own words. Call record_section_brief once.`,
         tools: [SECTION_TOOL], tool_choice: { type: 'tool', name: 'record_section_brief' },
-        messages: [{ role: 'user', content: pool.map((s) => `${s.id} | ${s.sources.length} outlet(s) | ${s.status} | ${s.headline || s.claim}\n   ${s.summary}${(s.stocks || []).length ? '\n   Stocks: ' + s.stocks.map((k) => `${k.ticker} ${k.direction}`).join(', ') : ''}`).join('\n') }]
+        messages: [{ role: 'user', content: pool.map((s) => `${s.id} | ${s.region || 'Global'} | ${s.sources.length} outlet(s) | ${s.status} | ${s.headline || s.claim}\n   ${s.summary}${(s.stocks || []).length ? '\n   Stocks: ' + s.stocks.map((k) => `${k.ticker} ${k.direction}`).join(', ') : ''}`).join('\n') }]
       }, apiKey);
       out[sec] = {
         generated: now.toISOString(),
         lead_story_id: ids.has(x.lead_story_id) ? x.lead_story_id : pool[0].id,
         title: trim(x.title, 100),
         notification: trim(x.notification, 140),
-        summary: trimKeepParas(x.summary, 2000),
+        summary: trimKeepParas(x.summary, global ? 3200 : 2000),
         points: (x.points || []).filter((p) => ids.has(p.story_id)).slice(0, 6).map((p) => ({ story_id: p.story_id, text: trim(p.text, 160) })),
         movers: (x.movers || []).filter((m) => /^[A-Z0-9.\-^=]{1,15}$/i.test(m.ticker || '')).slice(0, 6).map((m) => ({
           ticker: m.ticker.toUpperCase(), name: trim(m.name, 50), direction: ['up', 'down', 'mixed'].includes(m.direction) ? m.direction : 'mixed', note: trim(m.note, 100)

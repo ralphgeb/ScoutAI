@@ -105,6 +105,10 @@ export default {
       return weather(url, request, env);
     }
 
+    if (["/privacy", "/terms", "/support"].includes(url.pathname) && request.method === "GET") {
+      return page(url.pathname.slice(1));
+    }
+
     const transitCity = url.pathname.match(/^\/transit\/(nyc|paris)$/)?.[1];
     if (transitCity && request.method === "GET") {
       return transit(transitCity, env);
@@ -388,3 +392,55 @@ function parisLevel(d) {
   return 1;
 }
 
+
+// MARK: - App Store pages (privacy policy, terms, support), linked from the app and its listing
+
+const PAGES = {
+  privacy: ["Privacy policy", `
+<p>Scout is a news app. It has no accounts, no ads, no analytics and no tracking. This page explains the little information it uses, and why.</p>
+<h2>What stays on your iPhone</h2>
+<p>Your topics, regions, saved stories, reading history, stocks you follow and appearance settings are stored only on your iPhone. Deleting the app deletes them.</p>
+<h2>Location (optional)</h2>
+<p>If you allow it, Scout uses your location only to show the weather on Today. The app rounds it to about 1 km before asking the Scout service, which groups it into an area of about 5 km and shares one forecast per area. Your location is not stored or linked to you. Weather comes from Apple Weather (WeatherKit). Scout also uses the last location iOS already has to pick the nearest metro network (London, New York or Paris); it never asks for location for that.</p>
+<h2>Stocks you follow</h2>
+<p>When you follow a stock, its ticker (for example AAPL) is sent to the Scout service so that its price and summary are prepared. Only the ticker is sent, with no name or device identifier. Tickers stay on the shared list for 45 days after anyone last follows them.</p>
+<h2>Service requests</h2>
+<p>Like any web service, the Scout service (on Cloudflare) sees the IP address of each request. It is used only to limit how many requests one address can make in a day, kept for a day in a cache, and never stored with anything else.</p>
+<h2>Purchases</h2>
+<p>Scout Plus is bought through Apple. Scout never sees your payment details; Apple only tells the app whether your subscription is active.</p>
+<h2>News</h2>
+<p>Stories link to their original publishers. Opening one takes you to that publisher's site, which has its own privacy policy.</p>
+<h2>Children</h2>
+<p>Scout is not directed at children and collects no personal information from anyone.</p>
+<h2>Contact</h2>
+<p>Questions or requests: <a href="https://github.com/ralphgeb/ScoutAI/issues">open an issue on GitHub</a>.</p>`],
+  terms: ["Terms of use", `
+<p>Scout is provided under Apple's <a href="https://www.apple.com/legal/internet-services/itunes/dev/stdeula/">Standard Licensed Application End User License Agreement</a>, together with these notes.</p>
+<h2>Scout Plus</h2>
+<p>Scout Plus is an auto-renewing monthly subscription. Payment is charged to your Apple account when you confirm the purchase. It renews automatically unless cancelled at least 24 hours before the end of the current period, and your account is charged for renewal within 24 hours before that. You can manage or cancel it in your iPhone's Settings, under your name, then Subscriptions.</p>
+<h2>AI summaries</h2>
+<p>Summaries, rumour odds and market notes are written by AI from public news and can be wrong. Nothing in Scout is financial advice. Every story links to its original source.</p>
+<h2>Prices</h2>
+<p>Stock prices may be delayed and are for information only.</p>`],
+  support: ["Support", `
+<p>Need help with Scout, or have an idea? <a href="https://github.com/ralphgeb/ScoutAI/issues">Open an issue on GitHub</a> and we'll get back to you.</p>
+<h2>Common questions</h2>
+<p><b>When is the briefing written?</b> Every morning at 6:00 London time. Pull Today down to refresh.</p>
+<p><b>How do I cancel Scout Plus?</b> iPhone Settings, tap your name, then Subscriptions, then Scout Plus.</p>
+<p><b>How do I restore my subscription on a new iPhone?</b> In Scout, open Settings, then Scout Plus, then Restore purchases.</p>
+<p><b>Why is the weather for London?</b> Location is off for Scout. Turn it on in iPhone Settings, Scout, Location.</p>
+<p><a href="/privacy">Privacy policy</a> · <a href="/terms">Terms of use</a></p>`],
+};
+
+function page(name) {
+  const [title, body] = PAGES[name];
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Scout · ${title}</title><style>
+:root{color-scheme:light dark;--ink:#131B2C;--bg:#F5F6F8;--accent:#E25555}
+@media (prefers-color-scheme:dark){:root{--ink:#EEF0F4;--bg:#0B0F18}}
+body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.55 -apple-system,system-ui,sans-serif}
+main{max-width:680px;margin:0 auto;padding:40px 20px 60px}h1{font-size:30px;margin:0 0 6px}h2{font-size:19px;margin:28px 0 6px}
+a{color:var(--accent)}.small{opacity:.6;font-size:14px}</style></head><body><main>
+<p class="small">Scout: News on the go</p><h1>${title}</h1>${body}<p class="small">Last updated 31 October 2026</p></main></body></html>`;
+  return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "max-age=3600" } });
+}

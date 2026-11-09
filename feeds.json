@@ -144,5 +144,22 @@
   {"name": "Reuters business (via Google News)", "section": "Finance", "region": "Global", "url": "https://news.google.com/rss/search?q=site:reuters.com+(markets+OR+business+OR+economy)+when:1d&hl=en-US&gl=US&ceid=US:en"},
   {"name": "The Washington Post (via Google News)", "section": "World", "region": "US", "url": "https://news.google.com/rss/search?q=site:washingtonpost.com+when:1d&hl=en-US&gl=US&ceid=US:en"},
   {"name": "USA Today (via Google News)", "section": "World", "region": "US", "url": "https://news.google.com/rss/search?q=site:usatoday.com+when:1d&hl=en-US&gl=US&ceid=US:en"},
-  {"name": "Bloomberg US economy (via Google News)", "section": "Finance", "region": "US", "url": "https://news.google.com/rss/search?q=site:bloomberg.com+(Fed+OR+inflation+OR+jobs+OR+%22Wall+Street%22)+when:1d&hl=en-US&gl=US&ceid=US:en"}
+  {"name": "Bloomberg US economy (via Google News)", "section": "Finance", "region": "US", "url": "https://news.google.com/rss/search?q=site:bloomberg.com+(Fed+OR+inflation+OR+jobs+OR+%22Wall+Street%22)+when:1d&hl=en-US&gl=US&ceid=US:en"},
+  {"name": "The National (UAE)", "section": "World", "region": "Global", "url": "https://news.google.com/rss/search?q=site:thenationalnews.com+when:1d&hl=en-GB&gl=GB&ceid=GB:en"},
+  {"name": "The National: Business", "section": "Finance", "region": "Global", "url": "https://news.google.com/rss/search?q=site:thenationalnews.com/business+when:1d&hl=en-GB&gl=GB&ceid=GB:en"},
+  {"name": "Gulf News", "section": "World", "region": "Global", "url": "https://news.google.com/rss/search?q=site:gulfnews.com+when:1d&hl=en-GB&gl=GB&ceid=GB:en"},
+  {"name": "Khaleej Times", "section": "World", "region": "Global", "url": "https://news.google.com/rss/search?q=site:khaleejtimes.com+when:1d&hl=en-GB&gl=GB&ceid=GB:en"},
+  {"name": "Arab News", "section": "World", "region": "Global", "url": "https://news.google.com/rss/search?q=site:arabnews.com+when:1d&hl=en-GB&gl=GB&ceid=GB:en"},
+  {"name": "Al Arabiya English", "section": "World", "region": "Global", "url": "https://news.google.com/rss/search?q=site:english.alarabiya.net+when:1d&hl=en-GB&gl=GB&ceid=GB:en"},
+  {"name": "Gulf business (via Google News)", "section": "Finance", "region": "Global", "url": "https://news.google.com/rss/search?q=(UAE+OR+Dubai+OR+%22Abu+Dhabi%22+OR+Saudi+OR+Qatar)+(economy+OR+markets+OR+oil+OR+business)+when:1d&hl=en-GB&gl=GB&ceid=GB:en"},
+  {"name": "NPR Politics", "section": "World", "region": "US", "url": "https://feeds.npr.org/1014/rss.xml"},
+  {"name": "AP business (via Google News)", "section": "Finance", "region": "US", "url": "https://news.google.com/rss/search?q=site:apnews.com+(business+OR+economy+OR+markets)+when:1d&hl=en-US&gl=US&ceid=US:en"},
+  {"name": "Semafor (via Google News)", "section": "World", "region": "US", "url": "https://news.google.com/rss/search?q=site:semafor.com+when:1d&hl=en-US&gl=US&ceid=US:en"},
+  {"name": "Time (via Google News)", "section": "World", "region": "US", "url": "https://news.google.com/rss/search?q=site:time.com+when:1d&hl=en-US&gl=US&ceid=US:en"},
+  {"name": "The New York Times Technology", "section": "Tech", "region": "US", "url": "https://rss.nytimes.com/services/xml/rss/nyt/Technology.xml"},
+  {"name": "The Wall Street Journal Tech", "section": "Tech", "region": "US", "url": "https://feeds.content.dowjones.io/public/rss/RSSWSJD"},
+  {"name": "The Economist: The world this week", "section": "World", "region": "Global", "url": "https://www.economist.com/the-world-this-week/rss.xml"},
+  {"name": "The Economist: International", "section": "World", "region": "Global", "url": "https://www.economist.com/international/rss.xml"},
+  {"name": "The Economist: Business", "section": "Finance", "region": "Global", "url": "https://www.economist.com/business/rss.xml"},
+  {"name": "The Economist: Science and technology", "section": "Tech", "region": "Global", "url": "https://www.economist.com/science-and-technology/rss.xml"}
 ]

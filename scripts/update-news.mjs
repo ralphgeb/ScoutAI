@@ -18,12 +18,12 @@
 // You normally never need to touch this file. Settings you might change:
 const MODEL = process.env.ANTHROPIC_MODEL || 'claude-haiku-5-5';
 const BRIEFING_MODEL = process.env.BRIEFING_MODEL || MODEL;
-const MAX_NEW_PER_RUN = Number(process.env.MAX_NEW_PER_RUN || 200); // stories analysed per run: 50 for each of the 4 sections (caps cost)
-const MAX_TRIAGE = 1600;       // headlines checked in the quick first pass (cheap: headlines only), shared fairly between sections and regions
+const MAX_NEW_PER_RUN = Number(process.env.MAX_NEW_PER_RUN || 230); // stories analysed per run: about 57 for each of the 4 sections (caps cost)
+const MAX_TRIAGE = 1900;       // headlines checked in the quick first pass (cheap: headlines only), shared fairly between sections and regions
 const TRIAGE_BATCH = 60;       // headlines per quick-pass request
 const BATCH_SIZE = 6;          // articles per full-analysis request
 // Batch mode (scheduled updates): requests go through Anthropic's Message Batches
-// API at half price. It can take a while, so the daily update starts at 6:00.
+// API at half price. It can take a while, so the daily update starts at 5:00.
 const USE_BATCH = /^(1|true|yes)$/i.test(process.env.AI_BATCH || '');
 const BATCH_WAIT_MIN = Number(process.env.BATCH_WAIT_MIN || 25); // after this, unfinished requests are sent normally
 const PARALLEL = USE_BATCH ? 100 : 3; // AI requests running at the same time
@@ -87,7 +87,7 @@ export const REPUTABLE = new RegExp('^(the )?(' + [
   'Financial Times', 'Economist', 'BBC', 'Guardian(?=$)', 'Sky News', 'Telegraph', 'Times(?=$)', 'Independent(?=$)', 'Evening Standard', 'City A\\.M\\.',
   'The Verge', 'Wired', 'WIRED', 'TechCrunch', 'Ars Technica', 'Engadget', 'CNET', 'ZDNET', 'MIT Technology Review', 'The Information',
   'DW(?=$)', 'Deutsche Welle', 'France 24', 'FRANCE 24', 'Euronews', 'euronews', 'Le Monde', 'Der Spiegel', 'DER SPIEGEL', 'Irish Times', 'RTE',
-  'Al Jazeera', 'South China Morning Post', 'Nikkei Asia', 'Straits Times', 'The Hindu', 'Hindustan Times', 'Times of India',
+  'Al Jazeera', 'The National', 'Gulf News', 'Khaleej Times', 'Arab News', 'Al Arabiya', 'Asharq Al-Awsat', 'Semafor', 'NPR', 'South China Morning Post', 'Nikkei Asia', 'Straits Times', 'The Hindu', 'Hindustan Times', 'Times of India',
   'Economic Times', 'NDTV', 'Mint(?=$)', 'Business Standard', 'Japan Times', 'Kyodo', 'Yonhap', 'Korea Herald', 'Korea JoongAng Daily',
   'CNA(?=$)', 'Channel NewsAsia', 'ABC \\(Australia\\)', 'ABC News \\(Australia\\)', 'Sydney Morning Herald', 'Caixin',
   'Business of Fashion', 'Vogue Business', 'Vogue(?=$)', 'WWD', 'Variety', 'Hollywood Reporter', 'CoinDesk', 'Nature(?=$)', 'Science(?=$)'

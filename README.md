@@ -1,6 +1,6 @@
 # Rumour Radar
 
-Your morning and evening briefing on tech, AI, gadgets and markets, as an iPhone app. It reads about 150 tech, finance, world and fashion news sites from the UK, the US, Europe and Asia, and tags every story with its region. Every story gets its picture and an AI summary with key points, plus the stocks it could move. Rumours get their own tab with AI odds on how likely each one is to be true.
+Your morning and evening briefing on tech, AI, gadgets and markets, as an iPhone app. It reads about 160 tech, finance, world and fashion news sites from the UK, the US, Europe, Asia and the Gulf, and tags every story with its region. Every story gets its picture and an AI summary with key points, plus the stocks it could move. Rumours get their own tab with AI odds on how likely each one is to be true.
 
 ## Already using an older version? Update (about 10 minutes)
 
@@ -128,7 +128,7 @@ The refresh button at the top right, or pulling down on any tab, always reloads 
 1. Open the app and go to **Settings → Live refresh**.
 2. Paste the key and tap **Save key**. The status changes to **On**.
 
-Tapping refresh (or pulling down) updates the **Tube and weather** straight away and fetches the **latest stock prices** (about a minute). Newly added stocks also get their AI summary. Refresh never re-runs the news, so it costs almost nothing. **News and Today update at 6:00 each morning.** For an extra news update, use **Actions → Update news → Run workflow** on GitHub.
+Tapping refresh (or pulling down) updates the **Tube and weather** straight away and fetches the **latest stock prices** (about a minute). Newly added stocks also get their AI summary. Refresh never re-runs the news, so it costs almost nothing. **News and Today update at 5:00 each morning.** For an extra news update, use **Actions → Update news → Run workflow** on GitHub.
 
 **About safety:**
 - The key is stored only on your phone.
@@ -165,7 +165,7 @@ The app has four tabs along the bottom.
 
 - **Today** opens with a **live weather card**: the current temperature and conditions, today's high and low, and the forecast every 2 hours for the next 10 hours. It updates every time you open the app. The first time, your iPhone asks for your location. If you say no, it shows London. You can switch between My location and London in **Settings → Weather**. Tap the card to refresh it.
 - Under the weather, **Tube status** shows every Tube line and the Elizabeth line, live from TfL, with the time it was updated. Lines with problems are listed first. Tap one to see why. It refreshes every time you open the app. You can hide it in **Settings → Tube status**.
-- **Today** is your tech front page. Briefings arrive at 6:00 each morning, London time. Each one has:
+- **Today** is your tech front page. Briefings arrive at 5:00 each morning, London time. Each one has:
   - a cover headline and an overview of what happened
   - the top stories with pictures
   - **Rumour watch**
@@ -233,7 +233,7 @@ To change a file, open it on GitHub, click the **pencil** icon to edit, then **C
 
 GitHub and the hosting are free. The AI uses Claude Haiku, the cheapest model.
 
-The AI reads each article and writes a summary with key points (no long write-ups, which keeps the cost down). Scheduled updates use Anthropic's batch queue, which costs half as much but can take a while, so they start at 6:00 each morning. On the other hand, updates now run twice a day (plus whenever you tap refresh) instead of every 30 minutes. Each daily update analyses up to 200 new stories, 50 for each of Tech, Finance, World and Fashion, shared fairly between the UK, the US, Europe and Asia (more sources only means better picks: the cap keeps the cost the same), and the app keeps 520 stories (130 per section). The World and Finance summaries cover every region.
+The AI reads each article and writes a summary with key points (no long write-ups, which keeps the cost down). Scheduled updates use Anthropic's batch queue, which costs half as much but can take a while, so they start at 5:00 each morning. On the other hand, updates now run twice a day (plus whenever you tap refresh) instead of every 30 minutes. Each daily update analyses up to 230 new stories, about 57 for each of Tech, Finance, World and Fashion, shared fairly between the UK, the US, Europe and Asia (more sources only means better picks: the cap keeps the cost the same), and the app keeps 520 stories (130 per section). The World and Finance summaries cover every region.
 
 Check **console.anthropic.com → Usage** after the first day to see the real cost, and keep a monthly spend limit set there. To spend less, lower `MAX_NEW_PER_RUN` near the top of `scripts/update-news.mjs`.
 

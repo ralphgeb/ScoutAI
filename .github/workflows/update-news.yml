@@ -11,7 +11,7 @@ on:
     # Checks with nothing to do take a few seconds.
     - cron: "12,42 * * * *"
     # Just before 7:00 London time (summer and winter) for the morning notification.
-    - cron: "56 5,6 * * *"
+    - cron: "56 4,5 * * *"
   workflow_dispatch:          # the "Run workflow" button and the app's refresh button
     inputs:
       briefing:

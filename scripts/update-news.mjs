@@ -38,7 +38,8 @@ const UPGRADE_MAX = 20;        // older stories per run that get key points adde
 // Share of each run's full analyses per section, so no section crowds out the others.
 const SECTION_SHARE = { Tech: 0.25, Finance: 0.25, World: 0.25, Fashion: 0.25 };
 // Sources that never appear in the app.
-const BLOCKED = /cnbc/i;
+// Outlets left out of the app. Indian outlets are left out at the editor's request.
+const BLOCKED = /cnbc|the hindu\b|thehindu|hindustan times|hindustantimes|times of india|timesofindia|indiatimes|economic times|ndtv|livemint|\bmint\b|business standard|news18|india today|indiatoday|deccan|the print\b|theprint|firstpost|moneycontrol/i;
 const FASHION_OUTLETS = /WWD|Business of Fashion|Vogue|Harper's Bazaar|Fashionista|Highsnobiety|Hypebeast|Telegraph Fashion|Guardian Fashion/i;
 
 import { parseFeed, findMetaImage, findPublished, stripHtml } from './feed-parser.mjs';
@@ -87,8 +88,8 @@ export const REPUTABLE = new RegExp('^(the )?(' + [
   'Financial Times', 'Economist', 'BBC', 'Guardian(?=$)', 'Sky News', 'Telegraph', 'Times(?=$)', 'Independent(?=$)', 'Evening Standard', 'City A\\.M\\.',
   'The Verge', 'Wired', 'WIRED', 'TechCrunch', 'Ars Technica', 'Engadget', 'CNET', 'ZDNET', 'MIT Technology Review', 'The Information',
   'DW(?=$)', 'Deutsche Welle', 'France 24', 'FRANCE 24', 'Euronews', 'euronews', 'Le Monde', 'Der Spiegel', 'DER SPIEGEL', 'Irish Times', 'RTE',
-  'Al Jazeera', 'The National', 'Gulf News', 'Khaleej Times', 'Arab News', 'Al Arabiya', 'Asharq Al-Awsat', 'Semafor', 'NPR', 'South China Morning Post', 'Nikkei Asia', 'Straits Times', 'The Hindu', 'Hindustan Times', 'Times of India',
-  'Economic Times', 'NDTV', 'Mint(?=$)', 'Business Standard', 'Japan Times', 'Kyodo', 'Yonhap', 'Korea Herald', 'Korea JoongAng Daily',
+  'Al Jazeera', 'The National', 'Gulf News', 'Khaleej Times', 'Arab News', 'Al Arabiya', 'Asharq Al-Awsat', 'Semafor', 'NPR', 'South China Morning Post', 'Nikkei Asia', 'Straits Times', 
+  'Japan Times', 'Kyodo', 'Yonhap', 'Korea Herald', 'Korea JoongAng Daily',
   'CNA(?=$)', 'Channel NewsAsia', 'ABC \\(Australia\\)', 'ABC News \\(Australia\\)', 'Sydney Morning Herald', 'Caixin',
   'Business of Fashion', 'Vogue Business', 'Vogue(?=$)', 'WWD', 'Variety', 'Hollywood Reporter', 'CoinDesk', 'Nature(?=$)', 'Science(?=$)'
 ].join('|') + ')( |$|:|,)', 'i');
@@ -1522,6 +1523,9 @@ export async function main() {
   try {
     const secs = await makeSectionBriefs(news.stories, apiKey);
     briefing.sections = { ...(briefing.sections || {}), ...secs };
+    // the app shows the day's Morning and Evening briefings side by side: keep each edition
+    const edition = londonHour() < 12 ? 'Morning' : 'Evening';
+    if (Object.keys(secs).length) briefing.section_editions = { ...(briefing.section_editions || {}), [edition]: secs };
   } catch (e) {
     if (e.fatal) { console.error('\n❌ ' + e.message + '\n'); process.exit(1); }
     log(`Section summaries failed: ${e.message}`);

@@ -16,12 +16,64 @@ export const VOICES = {
 /** A touch quicker than normal, so the briefing sounds more alive. */
 const RATE = 1.05;
 
-/** What's read: the headline, the lead paragraph and each highlight, as a newsreader would. */
+/** How each section is named when spoken. */
+const SPOKEN = { Tech: 'tech', Finance: 'money and markets', World: 'world', Fashion: 'fashion' };
+
+/** Friendly openings: a different one for each section, changing every day. {s} is the section. */
+const OPENERS = {
+  Morning: [
+    'Good morning! Had your coffee yet? Let me catch you up on the {s} news you missed overnight.',
+    'Morning! Grab a coffee and let\'s go through what happened in {s} news while you were asleep.',
+    'Rise and shine. Here\'s your {s} catch-up before the day gets going.',
+    'Good morning. Still waking up? No problem, I\'ve got the {s} headlines for you.',
+    'Hello and good morning! Here\'s everything worth knowing in {s} news today, in a couple of minutes.',
+    'Morning! Before your inbox takes over, here\'s what\'s happening in {s} news.',
+    'Good morning. Kettle on? Let\'s run through the {s} stories you need today.',
+    'Hey, good morning! Here\'s the {s} news you missed overnight, quick and easy.',
+    'Morning! Let\'s start the day with a quick look at the {s} news.',
+    'Good morning. On your way in? Here\'s your {s} briefing for the commute.',
+    'Morning, early bird! Here\'s what\'s been going on in {s} news.',
+    'Good morning! Coffee in one hand, {s} news in the other. Here we go.',
+    'Hi, good morning. Here\'s a quick {s} roundup to set you up for the day.',
+    'Morning! Lots going on in {s} news today. Let me walk you through it.',
+  ],
+  Evening: [
+    'On your way home? Let me catch you up on today\'s {s} news.',
+    'Good evening! Here\'s what happened in {s} news while you were busy today.',
+    'Evening! Kick back for a couple of minutes, here\'s your {s} catch-up.',
+    'Long day? Here\'s the {s} news you might have missed.',
+    'Hello, good evening. Let\'s wrap up the day\'s {s} news.',
+    'Evening! Before you switch off, here\'s the latest {s} news.',
+    'Good evening. Dinner on the go? Here\'s your {s} roundup.',
+    'Hey, welcome back. Here\'s how the day went in {s} news.',
+    'Evening! Let me fill you in on the {s} stories from today.',
+    'Heading home? Here\'s a quick {s} catch-up for the journey.',
+    'Good evening! Here\'s everything that mattered in {s} news today.',
+    'Evening. Put your feet up, here\'s your {s} wrap-up.',
+  ],
+};
+
+/** Morning or Evening, from when the briefing was written (London time). */
+export function edition(brief) {
+  const d = brief.generated ? new Date(brief.generated) : new Date();
+  const h = Number(new Intl.DateTimeFormat('en-GB', { hour: 'numeric', hour12: false, timeZone: 'Europe/London' }).format(d));
+  return h < 15 ? 'Morning' : 'Evening';
+}
+
+/** Today's opening for a section: different for each section, and a new one each day. */
+export function opener(sec, brief) {
+  const list = OPENERS[edition(brief)];
+  const day = Math.floor((brief.generated ? new Date(brief.generated) : new Date()).getTime() / 86400000);
+  const n = ['Tech', 'Finance', 'World', 'Fashion'].indexOf(sec);
+  return list[(day * 5 + Math.max(0, n) * 3) % list.length].replace('{s}', SPOKEN[sec] || sec.toLowerCase());
+}
+
+/** What's read: a friendly opening, the headline, the lead paragraph and each highlight. */
 export function script(sec, brief) {
   const lead = String(brief.summary || '').split(/\n\s*\n/)[0]?.trim() || '';
   const items = (brief.highlights?.length ? brief.highlights.map((h) => (h.label ? `${h.label}. ${h.text}` : h.text))
     : (brief.points || []).map((p) => p.text || p.line)).filter(Boolean);
-  return [`Scout. Your ${sec} briefing.`, brief.title, lead, ...items].filter(Boolean).join('\n\n').slice(0, 4500);
+  return [opener(sec, brief), brief.title, lead, ...items].filter(Boolean).join('\n\n').slice(0, 4500);
 }
 
 async function pickVoice(key, want) {
@@ -83,7 +135,7 @@ export async function makeSamples(briefing, log = console.log) {
   const brief = briefing.sections?.Tech;
   if (!brief?.title) { log('Voice samples skipped (no Tech briefing).'); return; }
   const lead = String(brief.summary || '').split(/\n\s*\n/)[0]?.trim() || '';
-  const text = ['Scout. Your Tech briefing.', brief.title, lead].filter(Boolean).join('\n\n').slice(0, 900);
+  const text = [opener('Tech', brief), brief.title, lead].filter(Boolean).join('\n\n').slice(0, 900);
   const r = await fetch(`${API}/voices?languageCode=${LANG}&key=${key}`, { signal: AbortSignal.timeout(20000) });
   const all = r.ok ? ((await r.json()).voices || []) : [];
   const gender = (name) => ({ MALE: 'male', FEMALE: 'female' })[all.find((v) => v.name === name)?.ssmlGender] || '';

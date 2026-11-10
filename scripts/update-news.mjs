@@ -42,6 +42,7 @@ const SECTION_SHARE = { Tech: 0.25, Finance: 0.25, World: 0.25, Fashion: 0.25 };
 const BLOCKED = /cnbc|the hindu\b|thehindu|hindustan times|hindustantimes|times of india|timesofindia|indiatimes|economic times|ndtv|livemint|\bmint\b|business standard|news18|india today|indiatoday|deccan|the print\b|theprint|firstpost|moneycontrol/i;
 const FASHION_OUTLETS = /WWD|Business of Fashion|Vogue|Harper's Bazaar|Fashionista|Highsnobiety|Hypebeast|Telegraph Fashion|Guardian Fashion/i;
 
+import { makeAudio } from './audio.mjs';
 import { parseFeed, findMetaImage, findPublished, stripHtml } from './feed-parser.mjs';
 import { updateStocks, validSymbol } from './stocks.mjs';
 import { publishFile, publishStocks, readPublishedStocks } from './publish.mjs';
@@ -1417,6 +1418,7 @@ export async function main() {
   await ensurePublicKey(DATA_DIR, pushKeys);
   if (MODE === 'subscribe') { await saveFromApp(DATA_DIR, pushKeys, process.env.PUSH, log); return; }
   if (MODE === 'notify') { await sendMorning(DATA_DIR, pushKeys, briefing, log); return; }
+  if (MODE === 'audio') { await makeAudio(briefing, log); return; }   // the spoken briefings only
 
   // The worldwide stock list for the app's search box: built when missing, then once a week.
   if (MODE !== 'prices') {
@@ -1540,6 +1542,7 @@ export async function main() {
   // Also on the Scout service, where the app gets them within a minute (GitHub's file server can lag).
   const sent = (await Promise.all([publishFile('news.json', news), publishFile('briefing.json', briefing)])).every(Boolean);
   log(sent ? 'News and briefing published to the Scout service.' : 'News and briefing not published to the Scout service (the app falls back to GitHub).');
+  try { await makeAudio(briefing, log); } catch (e) { log(`Spoken briefings failed: ${e.message}`); }
   await writeJSON(SEEN_FILE, [...done, ...seen].slice(0, MAX_SEEN));
   if (USE_BATCH) log(`AI requests at half price: ${batchStats.done}; sent normally: ${batchStats.fallback}.`);
   log(`Done: ${stats.added} new stories, ${stats.merged} merged into existing, ${stats.dropped} skipped as irrelevant. ${news.stories.length} stories total.`);

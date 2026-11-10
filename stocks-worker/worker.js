@@ -9,6 +9,7 @@
 //   GET  /list                                  → {"symbols": [{"symbol": "AAPL", "requested": "…"}]}
 //   GET  /stocks.json                           → the latest prices, AI summaries and headlines
 //   GET  /prices.json                           → prices for ~3,500 stocks and yesterday's risers and fallers
+//   GET  /audio.json, /audio/<Section>-<wavenet|chirp>.mp3 → the spoken briefings
 //   GET  /news.json, /briefing.json             → the latest news and briefing, fresh within a minute
 //                                                 (GitHub's own file server can lag by five minutes)
 //
@@ -89,7 +90,22 @@ export default {
       return json({ ok: true, symbols, refreshed: added, summarising: summarising || (brandNew > 0 && !!env.DISPATCH_TOKEN) });
     }
 
-    if (["/stocks.json", "/prices.json", "/news.json", "/briefing.json"].includes(url.pathname) && request.method === "GET") {
+    // spoken briefings: /audio/Tech-chirp.mp3 (the MP3s the updater records each morning)
+    const audio = url.pathname.match(/^\/audio\/(Tech|Finance|World|Fashion)-(wavenet|chirp)\.mp3$/);
+    if (audio && (request.method === "GET" || request.method === "HEAD")) {
+      const name = `audio-${audio[1]}-${audio[2]}.mp3`;
+      const cache = caches.default;
+      const key = new Request(`https://files.scout/${name}`);
+      const hit = await cache.match(key);
+      const headers = { "Content-Type": "audio/mpeg", "Cache-Control": "max-age=300", "Accept-Ranges": "bytes", ...cors() };
+      if (hit) return new Response(hit.body, { headers });
+      const body = await env.REQUESTS.get(`file:${name}`, "arrayBuffer");
+      if (!body) return json({ error: "Not recorded yet" }, 404);
+      await cache.put(key, new Response(body, { headers: { "Content-Type": "audio/mpeg", "Cache-Control": "max-age=300" } }));
+      return new Response(body, { headers });
+    }
+
+    if (["/stocks.json", "/prices.json", "/news.json", "/briefing.json", "/audio.json"].includes(url.pathname) && request.method === "GET") {
       const name = url.pathname.slice(1);
       const cache = caches.default;
       const key = new Request(`https://files.scout/${name}`);

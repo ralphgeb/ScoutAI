@@ -68,12 +68,14 @@ export function opener(sec, brief) {
   return list[(day * 5 + Math.max(0, n) * 3) % list.length].replace('{s}', SPOKEN[sec] || sec.toLowerCase());
 }
 
-/** What's read: a friendly opening, the headline, the lead paragraph and each highlight. */
+/** What's read: the headline, the lead paragraph and each highlight. The friendly opening is
+ *  recorded on its own (a few seconds), so the app plays it only before the first briefing of
+ *  each edition and the rest start straight with the news. */
 export function script(sec, brief) {
   const lead = String(brief.summary || '').split(/\n\s*\n/)[0]?.trim() || '';
   const items = (brief.highlights?.length ? brief.highlights.map((h) => (h.label ? `${h.label}. ${h.text}` : h.text))
     : (brief.points || []).map((p) => p.text || p.line)).filter(Boolean);
-  return [opener(sec, brief), brief.title, lead, ...items].filter(Boolean).join('\n\n').slice(0, 4500);
+  return [brief.title, lead, ...items].filter(Boolean).join('\n\n').slice(0, 4500);
 }
 
 async function pickVoice(key, want) {
@@ -109,13 +111,18 @@ export async function makeAudio(briefing, log = console.log) {
         const mp3 = await speak(key, name, script(sec, brief));
         const file = `audio-${sec}-${id}.mp3`;
         if (await publishBinary(file, mp3, 'audio/mpeg')) {
-          const entry = (index.sections[sec] ||= { title: brief.title, briefing: brief.generated || null, files: {} });
+          const entry = (index.sections[sec] ||= { title: brief.title, briefing: brief.generated || null, edition: edition(brief), files: {} });
           entry.files[id] = { path: `/audio/${sec}-${id}.mp3`, bytes: mp3.length };
+          // the short friendly opening, in the same voice
+          const intro = await speak(key, name, opener(sec, brief));
+          if (await publishBinary(`audio-${sec}-intro.mp3`, intro, 'audio/mpeg')) {
+            entry.files.intro = { path: `/audio/${sec}-intro.mp3`, bytes: intro.length, text: opener(sec, brief) };
+          }
         }
       } catch (e) { log(`Spoken ${sec} (${want.label}) skipped: ${e.message}`); }
     }
   }
-  const made = Object.values(index.sections).reduce((n, s) => n + Object.keys(s.files).length, 0);
+  const made = Object.values(index.sections).reduce((n, s) => n + Object.keys(s.files).filter((f) => f !== 'intro').length, 0);
   if (made) await publishFile('audio.json', index);
   log(`Spoken briefings: ${made} recordings (${Object.values(index.voices).map((v) => v.name).join(', ') || 'no voices'}).`);
   return index;

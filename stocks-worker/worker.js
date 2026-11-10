@@ -9,7 +9,7 @@
 //   GET  /list                                  → {"symbols": [{"symbol": "AAPL", "requested": "…"}]}
 //   GET  /stocks.json                           → the latest prices, AI summaries and headlines
 //   GET  /prices.json                           → prices for ~3,500 stocks and yesterday's risers and fallers
-//   GET  /audio.json, /audio/<Section>-<standard|wavenet|chirp>.mp3 → the spoken briefings
+//   GET  /audio.json, /audio/<Section>-<chirp|intro>.mp3 → the spoken briefings
 //   GET  /news.json, /briefing.json             → the latest news and briefing, fresh within a minute
 //                                                 (GitHub's own file server can lag by five minutes)
 //
@@ -91,7 +91,7 @@ export default {
     }
 
     // spoken briefings: /audio/Tech-chirp.mp3 (the MP3s the updater records each morning)
-    const audio = url.pathname.match(/^\/audio\/(?:(Tech|Finance|World|Fashion)-(standard|wavenet|chirp)|sample-([A-Za-z]+(?:-[A-Z])?))\.mp3$/);
+    const audio = url.pathname.match(/^\/audio\/(?:(Tech|Finance|World|Fashion)-(standard|wavenet|chirp|intro)|sample-([A-Za-z]+(?:-[A-Z])?))\.mp3$/);
     if (audio && (request.method === "GET" || request.method === "HEAD")) {
       const name = audio[3] ? `audio-sample-${audio[3]}.mp3` : `audio-${audio[1]}-${audio[2]}.mp3`;
       const cache = caches.default;

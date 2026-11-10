@@ -66,6 +66,16 @@ jobs:
           echo "::add-mask::$token"
           export CLOUDFLARE_API_TOKEN="$token" CLOUDFLARE_ACCOUNT_ID="$account"
           W="npx --yes wrangler@3.80.0"
+          # Saves a secret on the service, waiting and trying again if Cloudflare is still busy with
+          # the previous change ("modified concurrently").
+          putsecret() {
+            v=$(cat)
+            for i in 1 2 3 4; do
+              printf %s "$v" | $W secret put "$1" && { sleep 2; return 0; }
+              sleep $((i * 5))
+            done
+            return 1
+          }
 
           # What the token can do, without printing it: its shape, whether Cloudflare accepts it,
           # and whether it can see this account and its Workers and KV storage.
@@ -110,7 +120,7 @@ jobs:
             code=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $gh" \
               "https://api.github.com/repos/${{ github.repository }}/actions/workflows")
             echo "GitHub key for quick summaries: $([ "$code" = 200 ] && echo "accepted" || echo "refused ($code)")"
-            printf %s "$gh" | $W secret put DISPATCH_TOKEN
+            printf %s "$gh" | putsecret DISPATCH_TOKEN
             echo "::notice::Reliable timing is on: every 10 minutes the service starts the update for whatever is due (6:00 briefing, prices every 30 minutes), and new stocks get their AI summary within about 10 minutes."
           else
             echo "::warning::No SCOUT_DISPATCH_TOKEN secret: updates rely on GitHub's own schedule, which often runs only a few times a day, and new stocks get their AI summary with the morning update."
@@ -118,9 +128,9 @@ jobs:
 
           # Shared weather, if the WeatherKit key has been added.
           if [ -n "$WEATHERKIT_KEY_ID" ] && [ -n "$WEATHERKIT_PRIVATE_KEY" ] && [ -n "$APPLE_TEAM_ID" ]; then
-            printf %s "$WEATHERKIT_KEY_ID" | tr -d '[:space:]' | $W secret put WEATHERKIT_KEY_ID
-            printf %s "$APPLE_TEAM_ID" | tr -d '[:space:]' | $W secret put APPLE_TEAM_ID
-            printf %s "$WEATHERKIT_PRIVATE_KEY" | $W secret put WEATHERKIT_PRIVATE_KEY
+            printf %s "$WEATHERKIT_KEY_ID" | tr -d '[:space:]' | putsecret WEATHERKIT_KEY_ID
+            printf %s "$APPLE_TEAM_ID" | tr -d '[:space:]' | putsecret APPLE_TEAM_ID
+            printf %s "$WEATHERKIT_PRIVATE_KEY" | putsecret WEATHERKIT_PRIVATE_KEY
             sleep 5
             code=$(curl -s -o weather.json -w "%{http_code}" "$url/weather?lat=51.51&lon=-0.13&tz=Europe/London")
             if [ "$code" = 200 ]; then
@@ -134,7 +144,7 @@ jobs:
 
           # Stories read aloud on demand (the same Google key as the spoken briefings).
           if [ -n "$GOOGLE_TTS_KEY" ]; then
-            printf %s "$GOOGLE_TTS_KEY" | tr -d '[:space:]' | $W secret put GOOGLE_TTS_KEY
+            printf %s "$GOOGLE_TTS_KEY" | tr -d '[:space:]' | putsecret GOOGLE_TTS_KEY
             echo "::notice::Stories read aloud on demand are on."
           else
             echo "::notice::Stories read aloud on demand are off (add GOOGLE_TTS_KEY): only the day's top stories have recordings."
@@ -142,7 +152,7 @@ jobs:
 
           # Metro status: New York needs no key, Paris needs PRIM_API_KEY.
           if [ -n "$PRIM_API_KEY" ]; then
-            printf %s "$PRIM_API_KEY" | tr -d '[:space:]' | $W secret put PRIM_API_KEY
+            printf %s "$PRIM_API_KEY" | tr -d '[:space:]' | putsecret PRIM_API_KEY
             sleep 5
           else
             echo "::notice::Paris metro status is off (add PRIM_API_KEY): Paris shows as unavailable in the app."

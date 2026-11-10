@@ -75,7 +75,8 @@ export const CHIRP_SAMPLES = {
   Zephyr: 'bright', Aoede: 'breezy', Laomedeia: 'upbeat', Leda: 'youthful', Autonoe: 'bright',
 };
 
-/** Records the start of the Tech briefing in each sample voice, for the /voices page. */
+/** Records the start of the Tech briefing in each sample voice (every British Standard and WaveNet
+ *  voice, and the Chirp 3: HD voices above), for the /voices page. */
 export async function makeSamples(briefing, log = console.log) {
   const key = (process.env.GOOGLE_TTS_KEY || '').trim();
   if (!key) { log('Voice samples skipped (no GOOGLE_TTS_KEY).'); return; }
@@ -83,14 +84,27 @@ export async function makeSamples(briefing, log = console.log) {
   if (!brief?.title) { log('Voice samples skipped (no Tech briefing).'); return; }
   const lead = String(brief.summary || '').split(/\n\s*\n/)[0]?.trim() || '';
   const text = ['Scout. Your Tech briefing.', brief.title, lead].filter(Boolean).join('\n\n').slice(0, 900);
+  const r = await fetch(`${API}/voices?languageCode=${LANG}&key=${key}`, { signal: AbortSignal.timeout(20000) });
+  const all = r.ok ? ((await r.json()).voices || []) : [];
+  const gender = (name) => ({ MALE: 'male', FEMALE: 'female' })[all.find((v) => v.name === name)?.ssmlGender] || '';
+  const list = [];
+  for (const tier of ['Standard', 'Wavenet']) {
+    for (const v of all.filter((v) => new RegExp(`^en-GB-${tier}-[A-Z]$`).test(v.name)).sort((a, b) => a.name.localeCompare(b.name))) {
+      const letter = v.name.slice(-1);
+      const current = (tier === 'Standard' ? VOICES.standard : VOICES.wavenet).pattern.test(v.name);
+      list.push({ tier: tier === 'Wavenet' ? 'WaveNet' : 'Standard', voice: `${tier}-${letter}`, name: v.name, mood: current ? 'current' : '' });
+    }
+  }
+  for (const [voice, mood] of Object.entries(CHIRP_SAMPLES)) list.push({ tier: 'Chirp 3: HD', voice, name: `en-GB-Chirp3-HD-${voice}`, mood });
   const out = { generated: new Date().toISOString(), samples: [] };
-  for (const [voice, mood] of Object.entries(CHIRP_SAMPLES)) {
-    const name = `en-GB-Chirp3-HD-${voice}`;
+  for (const s of list) {
     try {
-      const mp3 = await speak(key, name, text);
-      if (await publishBinary(`audio-sample-${voice}.mp3`, mp3, 'audio/mpeg')) out.samples.push({ voice, mood, name, path: `/audio/sample-${voice}.mp3` });
-    } catch (e) { log(`Sample ${voice} skipped: ${e.message}`); }
+      const mp3 = await speak(key, s.name, text);
+      const g = gender(s.name);
+      const mood = [g, s.mood].filter(Boolean).join(', ');
+      if (await publishBinary(`audio-sample-${s.voice}.mp3`, mp3, 'audio/mpeg')) out.samples.push({ ...s, mood, path: `/audio/sample-${s.voice}.mp3` });
+    } catch (e) { log(`Sample ${s.voice} skipped: ${e.message}`); }
   }
   await publishFile('audio-samples.json', out);
-  log(`Voice samples: ${out.samples.length} (${text.length} characters each).`);
+  log(`Voice samples: ${out.samples.length} (${text.length} characters each): ${out.samples.map((s) => s.voice).join(', ')}.`);
 }

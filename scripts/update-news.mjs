@@ -45,7 +45,7 @@ const FASHION_OUTLETS = /WWD|Business of Fashion|Vogue|Harper's Bazaar|Fashionis
 import { makeAudio, makeSamples } from './audio.mjs';
 import { parseFeed, findMetaImage, findPublished, stripHtml } from './feed-parser.mjs';
 import { updateStocks, validSymbol } from './stocks.mjs';
-import { publishFile, publishStocks, readPublishedStocks } from './publish.mjs';
+import { publishFile, publishStocks, readPublishedStocks, addStats } from './publish.mjs';
 import { vapidKeys, ensurePublicKey, saveFromApp, sendMorning } from './push.mjs';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
@@ -1418,7 +1418,7 @@ export async function main() {
   await ensurePublicKey(DATA_DIR, pushKeys);
   if (MODE === 'subscribe') { await saveFromApp(DATA_DIR, pushKeys, process.env.PUSH, log); return; }
   if (MODE === 'notify') { await sendMorning(DATA_DIR, pushKeys, briefing, log); return; }
-  if (MODE === 'audio') { await makeAudio(briefing, log); return; }   // the spoken briefings only
+  if (MODE === 'audio') { await makeAudio(briefing, log, await readJSON(NEWS_FILE, { stories: [] })); return; }   // the spoken briefings only
   if (MODE === 'samples') { await makeSamples(briefing, log); return; }   // Chirp 3: HD voices to compare (/voices)
 
   // The worldwide stock list for the app's search box: built when missing, then once a week.
@@ -1543,10 +1543,12 @@ export async function main() {
   // Also on the Scout service, where the app gets them within a minute (GitHub's file server can lag).
   const sent = (await Promise.all([publishFile('news.json', news), publishFile('briefing.json', briefing)])).every(Boolean);
   log(sent ? 'News and briefing published to the Scout service.' : 'News and briefing not published to the Scout service (the app falls back to GitHub).');
-  try { await makeAudio(briefing, log); } catch (e) { log(`Spoken briefings failed: ${e.message}`); }
+  try { await makeAudio(briefing, log, news); } catch (e) { log(`Spoken briefings failed: ${e.message}`); }
   await writeJSON(SEEN_FILE, [...done, ...seen].slice(0, MAX_SEEN));
   if (USE_BATCH) log(`AI requests at half price: ${batchStats.done}; sent normally: ${batchStats.fallback}.`);
   log(`Done: ${stats.added} new stories, ${stats.merged} merged into existing, ${stats.dropped} skipped as irrelevant. ${news.stories.length} stories total.`);
+  await addStats({ runs: 1, stories_added: stats.added, stories_merged: stats.merged, stories_skipped: stats.dropped, ai_requests: batchStats.done + batchStats.fallback })
+    .catch(() => {});
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

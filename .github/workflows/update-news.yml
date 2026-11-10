@@ -73,7 +73,11 @@ jobs:
       group: update-news
       cancel-in-progress: false
     steps:
+      # the latest main, not the copy from when this run was queued, so a run that waited
+      # behind another update sees that update's data
       - uses: actions/checkout@v5
+        with:
+          ref: main
 
       # If this run waited behind another update, check it's still needed.
       - name: Still due?

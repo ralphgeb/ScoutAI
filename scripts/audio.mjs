@@ -1,6 +1,6 @@
 // Spoken briefings: each morning, the four section briefings (Tech, Finance, World, Fashion) are
-// read by Google Cloud Text-to-Speech in two voices, Standard WaveNet and Chirp 3: HD, so the app
-// can play them (and the two can be compared). The MP3s go to the Scout service's KV store, with
+// read by Google Cloud Text-to-Speech in three voices, Standard, WaveNet and Chirp 3: HD, so the app
+// can play them (and they can be compared). The MP3s go to the Scout service's KV store, with
 // an index at /audio.json; everyone shares the same four recordings, so the cost doesn't grow
 // with listeners (about 6,000 characters a day per voice, inside Google's free monthly allowance).
 //
@@ -11,6 +11,7 @@ import { publishFile, publishBinary } from './publish.mjs';
 const API = 'https://texttospeech.googleapis.com/v1';
 const LANG = 'en-GB';
 export const VOICES = {
+  standard: { label: 'Standard', pattern: /^en-GB-Standard-B$/, fallback: /^en-GB-Standard-/ },
   wavenet: { label: 'WaveNet', pattern: /^en-GB-Wavenet-B$/, fallback: /^en-GB-Wavenet-/ },
   chirp: { label: 'Chirp 3: HD', pattern: /^en-GB-Chirp3-HD-(Charon|Orus|Puck)$/, fallback: /^en-GB-Chirp3-HD-/ },
 };

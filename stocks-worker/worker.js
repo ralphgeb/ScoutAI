@@ -10,6 +10,8 @@
 //   GET  /stocks.json                           → the latest prices, AI summaries and headlines
 //   GET  /prices.json                           → prices for ~3,500 stocks and yesterday's risers and fallers
 //   GET  /audio.json, /audio/<Section>-<chirp|intro>.mp3 → the spoken briefings
+//   GET  /audio/story/<id>.mp3                → a story read aloud (recorded the first time anyone plays it)
+//   POST /stats/play {kind, id, title}          → counts a play;  GET /stats → the numbers page
 //   GET  /news.json, /briefing.json             → the latest news and briefing, fresh within a minute
 //                                                 (GitHub's own file server can lag by five minutes)
 //
@@ -91,9 +93,25 @@ export default {
     }
 
     // spoken briefings: /audio/Tech-chirp.mp3 (the MP3s the updater records each morning)
-    const audio = url.pathname.match(/^\/audio\/(?:(Tech|Finance|World|Fashion)-(standard|wavenet|chirp|intro)|sample-([A-Za-z]+(?:-[A-Z])?))\.mp3$/);
+    const story = url.pathname.match(/^\/audio\/story\/([A-Za-z0-9_-]{4,64})\.mp3$/);
+    if (story && (request.method === "GET" || request.method === "HEAD")) {
+      return storyAudio(story[1], env);
+    }
+
+    if (url.pathname === "/stats/play" && request.method === "POST") {
+      let body = {};
+      try { body = await request.json(); } catch { /* counted anyway */ }
+      await countPlay(env, String(body.kind || "story").slice(0, 20), String(body.id || "").slice(0, 64), String(body.title || "").slice(0, 160));
+      return json({ ok: true });
+    }
+
+    if (url.pathname === "/stats" && request.method === "GET") {
+      return statsPage(env);
+    }
+
+    const audio = url.pathname.match(/^\/audio\/(?:(Tech|Finance|World|Fashion)-(standard|wavenet|chirp|intro)|sample-([A-Za-z]+(?:-[A-Z])?)|hold-([0-9]))\.mp3$/);
     if (audio && (request.method === "GET" || request.method === "HEAD")) {
-      const name = audio[3] ? `audio-sample-${audio[3]}.mp3` : `audio-${audio[1]}-${audio[2]}.mp3`;
+      const name = audio[4] ? `audio-hold-${audio[4]}.mp3` : audio[3] ? `audio-sample-${audio[3]}.mp3` : `audio-${audio[1]}-${audio[2]}.mp3`;
       const cache = caches.default;
       const key = new Request(`https://files.scout/${name}`);
       const hit = await cache.match(key);
@@ -190,6 +208,107 @@ async function runIfDue(env) {
   await env.REQUESTS.put("run:last", new Date().toISOString(), { expirationTtl: 86400 });
   await env.REQUESTS.delete("run:pending");
   return true;
+}
+
+// MARK: - Stories read aloud, on demand
+
+// The updater records the day's top 15 stories ahead. Any other story is recorded the first time
+// someone presses play (with Google's Chirp 3: HD voice Aoede, the same as the briefings), kept for
+// 10 days, and played from the store to everyone after that. A daily cap keeps the cost in check:
+// past it, the app reads the story with the phone's own voice instead.
+const STORY_VOICE = "en-GB-Chirp3-HD-Aoede";
+const STORY_RATE = 1.05;
+const STORY_DAYS = 10;
+const DAILY_STORY_CHARS = 30000;   // about 30 stories a day recorded on demand
+
+async function storyAudio(id, env) {
+  const headers = { "Content-Type": "audio/mpeg", "Cache-Control": "max-age=86400", ...cors() };
+  const name = `file:audio-story-${id}.mp3`;
+  const cache = caches.default;
+  const key = new Request(`https://files.scout/story-${id}.mp3`);
+  const hit = await cache.match(key);
+  if (hit) return new Response(hit.body, { headers });
+  let body = await env.REQUESTS.get(name, "arrayBuffer");
+  if (!body) {
+    if (!env.GOOGLE_TTS_KEY) return json({ error: "Story audio is off" }, 503);
+    const news = await env.REQUESTS.get("file:news.json", "json");
+    const st = (news?.stories || []).find((x) => x.id === id);
+    if (!st) return json({ error: "No such story" }, 404);
+    const points = (st.key_points || []).map((k) => (typeof k === "string" ? k : k?.text || k?.line || "")).filter(Boolean);
+    const text = [st.headline, st.summary || st.claim || "", ...points].filter(Boolean).join("\n\n").slice(0, 4500);
+    const day = new Date().toISOString().slice(0, 10), month = day.slice(0, 7);
+    const used = Number(await env.REQUESTS.get(`stat:${day}:chars_on_demand`)) || 0;
+    if (used + text.length > DAILY_STORY_CHARS) return json({ error: "Daily limit reached" }, 429);
+    const r = await fetch(`https://texttospeech.googleapis.com/v1/text:synthesize?key=${env.GOOGLE_TTS_KEY}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ input: { text }, voice: { languageCode: "en-GB", name: STORY_VOICE }, audioConfig: { audioEncoding: "MP3", speakingRate: STORY_RATE } }),
+    });
+    if (!r.ok) return json({ error: `Google answered ${r.status}` }, 502);
+    const b64 = (await r.json()).audioContent || "";
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    body = bytes.buffer;
+    await env.REQUESTS.put(name, body, { expirationTtl: STORY_DAYS * 86400 });
+    await bump(env, `stat:${day}:chars_on_demand`, text.length, 3 * 86400);
+    await bump(env, `stat:${month}:chars_on_demand`, text.length, 400 * 86400);
+    await bump(env, `stat:${month}:stories_recorded_on_demand`, 1, 400 * 86400);
+  }
+  await cache.put(key, new Response(body, { headers: { "Content-Type": "audio/mpeg", "Cache-Control": "max-age=86400" } }));
+  return new Response(body, { headers });
+}
+
+async function bump(env, key, by, ttl) {
+  const n = (Number(await env.REQUESTS.get(key)) || 0) + by;
+  await env.REQUESTS.put(key, String(n), { expirationTtl: ttl });
+  return n;
+}
+
+// MARK: - Numbers (/stats)
+
+async function countPlay(env, kind, id, title) {
+  const month = new Date().toISOString().slice(0, 7);
+  await bump(env, `stat:${month}:plays_${kind}`, 1, 400 * 86400);
+  if (!id) return;
+  const key = `play:${month}:${kind}:${id}`;
+  const n = (Number(await env.REQUESTS.get(key)) || 0) + 1;
+  await env.REQUESTS.put(key, String(n), { expirationTtl: 400 * 86400, metadata: { n, title } });
+}
+
+async function statsPage(env) {
+  const month = new Date().toISOString().slice(0, 7);
+  const updater = (await env.REQUESTS.get("file:stats-updater.json", "json")) || { months: {}, days: {} };
+  const u = updater.months?.[month] || {};
+  const get = async (k) => Number(await env.REQUESTS.get(`stat:${month}:${k}`)) || 0;
+  const [demandChars, demandStories, storyPlays, briefingPlays] = await Promise.all(
+    ["chars_on_demand", "stories_recorded_on_demand", "plays_story", "plays_briefing"].map(get));
+  const plays = await env.REQUESTS.list({ prefix: `play:${month}:` });
+  const top = plays.keys.map((k) => ({ kind: k.name.split(":")[2], n: k.metadata?.n || 0, title: k.metadata?.title || k.name.split(":")[3] }))
+    .sort((a, b) => b.n - a.n).slice(0, 15);
+  const chars = (u.chars_briefings || 0) + (u.chars_stories_ahead || 0) + demandChars;
+  const free = 1000000;
+  const over = Math.max(0, chars - free);
+  const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  const fmt = (n) => Number(n || 0).toLocaleString("en-GB");
+  const tile = (label, value, note = "") => `<div class="t"><div class="l">${label}</div><div class="v">${value}</div>${note ? `<div class="n">${note}</div>` : ""}</div>`;
+  const days = Object.entries(updater.days || {}).slice(-14).reverse()
+    .map(([d, x]) => `<tr><td>${d.slice(5)}</td><td>${fmt(x.runs)}</td><td>${fmt(x.stories_added)}</td><td>${fmt(x.ai_requests)}</td><td>${fmt((x.chars_briefings || 0) + (x.chars_stories_ahead || 0))}</td></tr>`).join("");
+  const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Scout numbers</title>
+<style>:root{--bg:#f6f4f1;--card:#fff;--text:#1c1b19;--dim:#8a857e;--accent:#e4572e}@media(prefers-color-scheme:dark){:root{--bg:#141312;--card:#22201e;--text:#eee;--dim:#8f8a83}}
+body{font:15px -apple-system,system-ui,sans-serif;margin:0 auto;max-width:720px;padding:20px 16px 40px;background:var(--bg);color:var(--text)}h1{font-size:28px;margin:0 0 2px}h2{font-size:17px;margin:26px 0 8px}.sub{color:var(--dim);margin-bottom:16px}
+.g{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px}.t{background:var(--card);border-radius:16px;padding:14px}.l{color:var(--dim);font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em}.v{font-size:26px;font-weight:800;margin-top:4px;font-variant-numeric:tabular-nums}.n{color:var(--dim);font-size:12px;margin-top:2px}
+.bar{height:8px;border-radius:4px;background:rgba(128,128,128,.2);overflow:hidden;margin-top:8px}.bar i{display:block;height:100%;background:var(--accent)}
+table{width:100%;border-collapse:collapse;background:var(--card);border-radius:16px;overflow:hidden}td,th{padding:9px 12px;text-align:left;border-bottom:1px solid rgba(128,128,128,.15);font-variant-numeric:tabular-nums}th{color:var(--dim);font-size:12px}ol{background:var(--card);border-radius:16px;padding:12px 12px 12px 36px;margin:0}li{padding:5px 0}li span{color:var(--dim)}</style>
+<h1>Scout numbers</h1><div class="sub">${month} · updated ${esc((updater.updated || "").slice(0, 16).replace("T", " "))} UTC</div>
+<h2>Voice (Google Text-to-Speech)</h2>
+<div class="t"><div class="l">Characters this month</div><div class="v">${fmt(chars)} <span style="font-size:15px;color:var(--dim)">of ${fmt(free)} free</span></div>
+<div class="bar"><i style="width:${Math.min(100, chars / free * 100).toFixed(1)}%"></i></div><div class="n">${over ? `About £${(over / 1e6 * 22.55).toFixed(2)} over the free allowance` : "Inside the free allowance"}</div></div>
+<div class="g" style="margin-top:10px">${tile("Briefings", fmt(u.chars_briefings), `${fmt(u.briefings_recorded)} recordings`)}${tile("Top stories ahead", fmt(u.chars_stories_ahead), `${fmt(u.stories_recorded_ahead)} stories`)}${tile("Played on demand", fmt(demandChars), `${fmt(demandStories)} stories`)}</div>
+<h2>Listening</h2><div class="g">${tile("Briefings played", fmt(briefingPlays))}${tile("Stories played", fmt(storyPlays))}</div>
+<h2>Most played this month</h2>${top.length ? `<ol>${top.map((t) => `<li>${esc(t.title)} <span>· ${t.kind} · ${t.n}</span></li>`).join("")}</ol>` : `<div class="t">Nothing played yet.</div>`}
+<h2>News</h2><div class="g">${tile("Updates", fmt(u.runs))}${tile("New stories", fmt(u.stories_added))}${tile("Merged", fmt(u.stories_merged))}${tile("Skipped", fmt(u.stories_skipped))}${tile("AI requests", fmt(u.ai_requests))}</div>
+<h2>Last 14 days</h2><table><tr><th>Day</th><th>Updates</th><th>New stories</th><th>AI requests</th><th>Characters</th></tr>${days || "<tr><td colspan=5>No days yet.</td></tr>"}</table>`;
+  return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
 }
 
 function cors() {

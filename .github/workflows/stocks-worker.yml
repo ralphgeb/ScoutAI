@@ -33,6 +33,7 @@ jobs:
       WEATHERKIT_PRIVATE_KEY: ${{ secrets.WEATHERKIT_PRIVATE_KEY }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       PRIM_API_KEY: ${{ secrets.PRIM_API_KEY }}
+      GOOGLE_TTS_KEY: ${{ secrets.GOOGLE_TTS_KEY }}
 
     steps:
       - name: Checkout
@@ -129,6 +130,14 @@ jobs:
             fi
           else
             echo "::notice::Shared weather is off (add WEATHERKIT_KEY_ID, WEATHERKIT_PRIVATE_KEY and APPLE_TEAM_ID): each iPhone asks Apple Weather itself."
+          fi
+
+          # Stories read aloud on demand (the same Google key as the spoken briefings).
+          if [ -n "$GOOGLE_TTS_KEY" ]; then
+            printf %s "$GOOGLE_TTS_KEY" | tr -d '[:space:]' | $W secret put GOOGLE_TTS_KEY
+            echo "::notice::Stories read aloud on demand are on."
+          else
+            echo "::notice::Stories read aloud on demand are off (add GOOGLE_TTS_KEY): only the day's top stories have recordings."
           fi
 
           # Metro status: New York needs no key, Paris needs PRIM_API_KEY.

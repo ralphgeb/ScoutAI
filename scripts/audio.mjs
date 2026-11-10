@@ -6,7 +6,7 @@
 //
 // Needs the GOOGLE_TTS_KEY secret (an API key restricted to the Text-to-Speech API).
 
-import { publishFile, publishBinary } from './publish.mjs';
+import { publishFile, publishBinary, readFile, addStats } from './publish.mjs';
 
 const API = 'https://texttospeech.googleapis.com/v1';
 const LANG = 'en-GB';
@@ -85,7 +85,28 @@ async function pickVoice(key, want) {
   return names.find((n) => want.pattern.test(n)) || names.find((n) => want.fallback.test(n));
 }
 
+let spoken = 0;   // characters sent to Google this run, for the stats page
+
+/** How many stories are recorded ahead each run, and how long a story's recording is kept. */
+const TOP_STORIES = 15;
+const STORY_DAYS = 10;
+
+/** What a story's recording reads: the headline, Scout's summary and its key points. */
+export function storyScript(st) {
+  const points = (st.key_points || []).map((k) => (typeof k === 'string' ? k : k?.text || k?.line || '')).filter(Boolean);
+  return [st.headline, st.summary || st.claim || '', ...points].filter(Boolean).join('\n\n').slice(0, 4500);
+}
+
+/** Short lines the app plays while a story nobody has played yet is being recorded. */
+const HOLD = [
+  'Hold on a second while I get this one ready for you. Almost there.',
+  'One moment, I\'m just getting this story ready for you.',
+  'Bear with me a second, this one\'s on its way.',
+  'Just a moment while I put this story together for you.',
+];
+
 async function speak(key, voice, text) {
+  spoken += text.length;
   const r = await fetch(`${API}/text:synthesize?key=${key}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(90000),
     body: JSON.stringify({ input: { text }, voice: { languageCode: LANG, name: voice }, audioConfig: { audioEncoding: 'MP3', speakingRate: RATE } }),
@@ -94,8 +115,8 @@ async function speak(key, voice, text) {
   return Buffer.from((await r.json()).audioContent, 'base64');
 }
 
-/** Records the four section briefings in both voices and publishes them. */
-export async function makeAudio(briefing, log = console.log) {
+/** Records the four section briefings, the day's top stories and the hold-on lines, and publishes them. */
+export async function makeAudio(briefing, log = console.log, news = null) {
   const key = (process.env.GOOGLE_TTS_KEY || '').trim();
   if (!key) { log('Spoken briefings skipped (no GOOGLE_TTS_KEY).'); return null; }
   const sections = briefing.sections || {};
@@ -123,8 +144,47 @@ export async function makeAudio(briefing, log = console.log) {
     }
   }
   const made = Object.values(index.sections).reduce((n, s) => n + Object.keys(s.files).filter((f) => f !== 'intro').length, 0);
-  if (made) await publishFile('audio.json', index);
-  log(`Spoken briefings: ${made} recordings (${Object.values(index.voices).map((v) => v.name).join(', ') || 'no voices'}).`);
+  const briefingChars = spoken;
+  const name = index.voices.chirp?.name;
+  const before = (await readFile('audio.json')) || {};
+
+  // the "hold on" lines, recorded once
+  index.hold = before.hold || [];
+  if (name && index.hold.length < HOLD.length) {
+    index.hold = [];
+    for (let i = 0; i < HOLD.length; i++) {
+      try {
+        const mp3 = await speak(key, name, HOLD[i]);
+        if (await publishBinary(`audio-hold-${i}.mp3`, mp3, 'audio/mpeg')) index.hold.push(`/audio/hold-${i}.mp3`);
+      } catch (e) { log(`Hold-on line ${i} skipped: ${e.message}`); }
+    }
+  }
+
+  // the day's top stories, recorded ahead so they play straight away (each one once)
+  const keep = Date.now() - STORY_DAYS * 86400e3;
+  index.stories = Object.fromEntries(Object.entries(before.stories || {}).filter(([, v]) => Date.parse(v.recorded) > keep));
+  let storiesMade = 0;
+  if (name && news?.stories?.length) {
+    const day = Date.now() - 36 * 3600e3;
+    const top = news.stories
+      .filter((st) => Date.parse(st.first_seen || st.last_updated || 0) > day && st.headline)
+      .sort((a, b) => (b.importance || 0) - (a.importance || 0) || (b.sources?.length || 0) - (a.sources?.length || 0))
+      .slice(0, TOP_STORIES);
+    for (const st of top) {
+      if (index.stories[st.id]) continue;
+      try {
+        const mp3 = await speak(key, name, storyScript(st));
+        if (await publishBinary(`audio-story-${st.id}.mp3`, mp3, 'audio/mpeg', STORY_DAYS)) {
+          index.stories[st.id] = { path: `/audio/story/${st.id}.mp3`, recorded: new Date().toISOString(), bytes: mp3.length };
+          storiesMade++;
+        }
+      } catch (e) { log(`Story ${st.id} not recorded: ${e.message}`); }
+    }
+  }
+  if (made || storiesMade) await publishFile('audio.json', index);
+  await addStats({ chars_briefings: briefingChars, chars_stories_ahead: spoken - briefingChars, stories_recorded_ahead: storiesMade, briefings_recorded: made });
+  log(`Spoken briefings: ${made} recordings (${Object.values(index.voices).map((v) => v.name).join(', ') || 'no voices'}); ${storiesMade} top stories recorded ahead; ${spoken} characters.`);
+  spoken = 0;
   return index;
 }
 

@@ -49,3 +49,22 @@ export async function publishFile(name, data) {
     return false;
   }
 }
+
+/** Writes raw bytes (an MP3 of a spoken briefing) to the service's KV store as `file:<name>`. */
+export async function publishBinary(name, bytes, type = 'application/octet-stream') {
+  const c = creds();
+  if (!c) return false;
+  const api = `https://api.cloudflare.com/client/v4/accounts/${c.account}/storage/kv/namespaces`;
+  const headers = { Authorization: `Bearer ${c.token}` };
+  try {
+    const list = await (await fetch(`${api}?per_page=100`, { headers, signal: AbortSignal.timeout(20000) })).json();
+    const ns = (list.result || []).find((n) => n.title === KV_TITLE)?.id;
+    if (!ns) return false;
+    const r = await fetch(`${api}/${ns}/values/${encodeURIComponent(`file:${name}`)}`, {
+      method: 'PUT', headers: { ...headers, 'Content-Type': type }, body: bytes, signal: AbortSignal.timeout(60000)
+    });
+    return (await r.json()).success === true;
+  } catch {
+    return false;
+  }
+}

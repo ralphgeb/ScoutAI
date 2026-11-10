@@ -68,3 +68,29 @@ export async function makeAudio(briefing, log = console.log) {
   log(`Spoken briefings: ${made} recordings (${Object.values(index.voices).map((v) => v.name).join(', ') || 'no voices'}).`);
   return index;
 }
+
+/** Chirp 3: HD voices to compare, with Google's description of each (Charon is the current one). */
+export const CHIRP_SAMPLES = {
+  Charon: 'informative (current)', Puck: 'upbeat', Fenrir: 'excitable', Sadachbia: 'lively', Achird: 'friendly',
+  Zephyr: 'bright', Aoede: 'breezy', Laomedeia: 'upbeat', Leda: 'youthful', Autonoe: 'bright',
+};
+
+/** Records the start of the Tech briefing in each sample voice, for the /voices page. */
+export async function makeSamples(briefing, log = console.log) {
+  const key = (process.env.GOOGLE_TTS_KEY || '').trim();
+  if (!key) { log('Voice samples skipped (no GOOGLE_TTS_KEY).'); return; }
+  const brief = briefing.sections?.Tech;
+  if (!brief?.title) { log('Voice samples skipped (no Tech briefing).'); return; }
+  const lead = String(brief.summary || '').split(/\n\s*\n/)[0]?.trim() || '';
+  const text = ['Scout. Your Tech briefing.', brief.title, lead].filter(Boolean).join('\n\n').slice(0, 900);
+  const out = { generated: new Date().toISOString(), samples: [] };
+  for (const [voice, mood] of Object.entries(CHIRP_SAMPLES)) {
+    const name = `en-GB-Chirp3-HD-${voice}`;
+    try {
+      const mp3 = await speak(key, name, text);
+      if (await publishBinary(`audio-sample-${voice}.mp3`, mp3, 'audio/mpeg')) out.samples.push({ voice, mood, name, path: `/audio/sample-${voice}.mp3` });
+    } catch (e) { log(`Sample ${voice} skipped: ${e.message}`); }
+  }
+  await publishFile('audio-samples.json', out);
+  log(`Voice samples: ${out.samples.length} (${text.length} characters each).`);
+}

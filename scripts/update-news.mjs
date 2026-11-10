@@ -42,7 +42,7 @@ const SECTION_SHARE = { Tech: 0.25, Finance: 0.25, World: 0.25, Fashion: 0.25 };
 const BLOCKED = /cnbc|the hindu\b|thehindu|hindustan times|hindustantimes|times of india|timesofindia|indiatimes|economic times|ndtv|livemint|\bmint\b|business standard|news18|india today|indiatoday|deccan|the print\b|theprint|firstpost|moneycontrol/i;
 const FASHION_OUTLETS = /WWD|Business of Fashion|Vogue|Harper's Bazaar|Fashionista|Highsnobiety|Hypebeast|Telegraph Fashion|Guardian Fashion/i;
 
-import { makeAudio } from './audio.mjs';
+import { makeAudio, makeSamples } from './audio.mjs';
 import { parseFeed, findMetaImage, findPublished, stripHtml } from './feed-parser.mjs';
 import { updateStocks, validSymbol } from './stocks.mjs';
 import { publishFile, publishStocks, readPublishedStocks } from './publish.mjs';
@@ -1419,6 +1419,7 @@ export async function main() {
   if (MODE === 'subscribe') { await saveFromApp(DATA_DIR, pushKeys, process.env.PUSH, log); return; }
   if (MODE === 'notify') { await sendMorning(DATA_DIR, pushKeys, briefing, log); return; }
   if (MODE === 'audio') { await makeAudio(briefing, log); return; }   // the spoken briefings only
+  if (MODE === 'samples') { await makeSamples(briefing, log); return; }   // Chirp 3: HD voices to compare (/voices)
 
   // The worldwide stock list for the app's search box: built when missing, then once a week.
   if (MODE !== 'prices') {

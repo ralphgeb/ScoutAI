@@ -91,9 +91,9 @@ export default {
     }
 
     // spoken briefings: /audio/Tech-chirp.mp3 (the MP3s the updater records each morning)
-    const audio = url.pathname.match(/^\/audio\/(Tech|Finance|World|Fashion)-(standard|wavenet|chirp)\.mp3$/);
+    const audio = url.pathname.match(/^\/audio\/(?:(Tech|Finance|World|Fashion)-(standard|wavenet|chirp)|sample-([A-Za-z]+))\.mp3$/);
     if (audio && (request.method === "GET" || request.method === "HEAD")) {
-      const name = `audio-${audio[1]}-${audio[2]}.mp3`;
+      const name = audio[3] ? `audio-sample-${audio[3]}.mp3` : `audio-${audio[1]}-${audio[2]}.mp3`;
       const cache = caches.default;
       const key = new Request(`https://files.scout/${name}`);
       const hit = await cache.match(key);
@@ -119,6 +119,15 @@ export default {
 
     if (url.pathname === "/weather" && request.method === "GET") {
       return weather(url, request, env);
+    }
+
+    // a page to hear the Chirp 3: HD voices side by side and pick one
+    if (url.pathname === "/voices" && request.method === "GET") {
+      const list = (await env.REQUESTS.get("file:audio-samples.json", "json"))?.samples || [];
+      const rows = list.map((s) => `<div class="v"><b>${s.voice}</b> <span>${s.mood}</span><audio controls preload="none" src="${s.path}"></audio></div>`).join("") || "<p>No samples recorded yet.</p>";
+      return new Response(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Scout voices</title>
+<style>body{font:16px -apple-system,system-ui,sans-serif;margin:0 auto;max-width:560px;padding:20px 16px;background:#faf8f5;color:#1c1b19}h1{font-size:24px}.v{background:#fff;border-radius:14px;padding:14px;margin:10px 0}.v span{color:#888}audio{width:100%;margin-top:8px}@media(prefers-color-scheme:dark){body{background:#151413;color:#eee}.v{background:#242220}}</style>
+<h1>Chirp 3: HD voices</h1><p>The start of today's Tech briefing in each voice.</p>${rows}`, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
     }
 
     if (["/privacy", "/terms", "/support"].includes(url.pathname) && request.method === "GET") {

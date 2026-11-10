@@ -1,6 +1,6 @@
 // Spoken briefings: each morning, the four section briefings (Tech, Finance, World, Fashion) are
-// read by Google Cloud Text-to-Speech in three voices, Standard, WaveNet and Chirp 3: HD, so the app
-// can play them (and they can be compared). The MP3s go to the Scout service's KV store, with
+// read by Google Cloud Text-to-Speech in Google's Chirp 3: HD voice Aoede, a little faster than normal, so the app
+// can play them. The MP3s go to the Scout service's KV store, with
 // an index at /audio.json; everyone shares the same four recordings, so the cost doesn't grow
 // with listeners (about 6,000 characters a day per voice, inside Google's free monthly allowance).
 //
@@ -11,10 +11,10 @@ import { publishFile, publishBinary } from './publish.mjs';
 const API = 'https://texttospeech.googleapis.com/v1';
 const LANG = 'en-GB';
 export const VOICES = {
-  standard: { label: 'Standard', pattern: /^en-GB-Standard-B$/, fallback: /^en-GB-Standard-/ },
-  wavenet: { label: 'WaveNet', pattern: /^en-GB-Wavenet-B$/, fallback: /^en-GB-Wavenet-/ },
-  chirp: { label: 'Chirp 3: HD', pattern: /^en-GB-Chirp3-HD-(Charon|Orus|Puck)$/, fallback: /^en-GB-Chirp3-HD-/ },
+  chirp: { label: 'Chirp 3: HD', pattern: /^en-GB-Chirp3-HD-Aoede$/, fallback: /^en-GB-Chirp3-HD-/ },
 };
+/** A touch quicker than normal, so the briefing sounds more alive. */
+const RATE = 1.05;
 
 /** What's read: the headline, the lead paragraph and each highlight, as a newsreader would. */
 export function script(sec, brief) {
@@ -34,7 +34,7 @@ async function pickVoice(key, want) {
 async function speak(key, voice, text) {
   const r = await fetch(`${API}/text:synthesize?key=${key}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(90000),
-    body: JSON.stringify({ input: { text }, voice: { languageCode: LANG, name: voice }, audioConfig: { audioEncoding: 'MP3', speakingRate: 1.0 } }),
+    body: JSON.stringify({ input: { text }, voice: { languageCode: LANG, name: voice }, audioConfig: { audioEncoding: 'MP3', speakingRate: RATE } }),
   });
   if (!r.ok) throw new Error(`synthesize (${voice}) answered ${r.status}: ${(await r.text()).slice(0, 200)}`);
   return Buffer.from((await r.json()).audioContent, 'base64');
@@ -71,8 +71,8 @@ export async function makeAudio(briefing, log = console.log) {
 
 /** Chirp 3: HD voices to compare, with Google's description of each (Charon is the current one). */
 export const CHIRP_SAMPLES = {
-  Charon: 'informative (current)', Puck: 'upbeat', Fenrir: 'excitable', Sadachbia: 'lively', Achird: 'friendly',
-  Zephyr: 'bright', Aoede: 'breezy', Laomedeia: 'upbeat', Leda: 'youthful', Autonoe: 'bright',
+  Charon: 'informative', Puck: 'upbeat', Fenrir: 'excitable', Sadachbia: 'lively', Achird: 'friendly',
+  Zephyr: 'bright', Aoede: 'breezy (current)', Laomedeia: 'upbeat', Leda: 'youthful', Autonoe: 'bright',
 };
 
 /** Records the start of the Tech briefing in each sample voice (every British Standard and WaveNet
@@ -91,7 +91,7 @@ export async function makeSamples(briefing, log = console.log) {
   for (const tier of ['Standard', 'Wavenet']) {
     for (const v of all.filter((v) => new RegExp(`^en-GB-${tier}-[A-Z]$`).test(v.name)).sort((a, b) => a.name.localeCompare(b.name))) {
       const letter = v.name.slice(-1);
-      const current = (tier === 'Standard' ? VOICES.standard : VOICES.wavenet).pattern.test(v.name);
+      const current = false;
       list.push({ tier: tier === 'Wavenet' ? 'WaveNet' : 'Standard', voice: `${tier}-${letter}`, name: v.name, mood: current ? 'current' : '' });
     }
   }

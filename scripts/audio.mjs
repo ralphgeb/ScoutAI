@@ -98,6 +98,8 @@ let elevenChars = 0;   // characters sent to ElevenLabs this run
 const ELEVEN_SECTIONS = ['Tech', 'World'];
 const ELEVEN_VOICE = 'Xb7hH8MSUJpSbSDYk0k2';   // Alice
 const ELEVEN_MODEL = 'eleven_multilingual_v2';
+/** Per briefing, to compare: World on Flash v2.5 (half the credits), Tech on Multilingual v2. */
+const ELEVEN_MODELS = { World: 'eleven_flash_v2_5' };
 
 // Gemini TTS (Google's newer, directable voices) for Finance (Flash) and Fashion (Pro), through the
 // Gemini API with a Google AI Studio key (GEMINI_API_KEY). Told how to read, in the same Aoede voice
@@ -166,10 +168,10 @@ async function speakGemini(_googleKey, model, text, voiceName = GEMINI_VOICE) {
   return mp3;
 }
 
-async function speakEleven(text) {
+async function speakEleven(text, sec = '') {
   const key = (process.env.ELEVENLABS_API_KEY || '').trim();
   const voice = (process.env.ELEVENLABS_VOICE_ID || '').trim() || ELEVEN_VOICE;
-  const model = (process.env.ELEVENLABS_MODEL || '').trim() || ELEVEN_MODEL;
+  const model = ELEVEN_MODELS[sec] || (process.env.ELEVENLABS_MODEL || '').trim() || ELEVEN_MODEL;
   const plain = text.replace(/\s*\[pause[^\]]*\]\s*/g, ' ... ');
   const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voice}?output_format=mp3_44100_128`, {
     method: 'POST', signal: AbortSignal.timeout(120000),
@@ -239,7 +241,7 @@ export async function makeAudio(briefing, log = console.log, news = null) {
         let engine = 'google';
         const say = async (text) => {
           if (eleven) {
-            try { const b = await speakEleven(text); engine = 'elevenlabs'; return b; }
+            try { const b = await speakEleven(text, sec); engine = 'elevenlabs'; return b; }
             catch (e) { log(`ElevenLabs (${sec}): ${e.message}; using Google instead.`); }
           }
           if (gemini) {

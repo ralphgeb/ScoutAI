@@ -22,7 +22,7 @@ on:
       mode:
         description: "full = news and stocks, stocks = stocks only (quick), prices = prices only (quickest), notify = send the morning notification now, audio = the spoken briefings only, samples = Chirp voices to compare at /voices, auto = whatever is due (the Scout service's 10-minute timer sends this)"
         type: choice
-        options: [full, stocks, prices, subscribe, notify, audio, samples, auto]
+        options: [full, stocks, prices, subscribe, notify, audio, samples, gemini-samples, auto]
         default: full
       watchlist:
         description: "Your stocks, sent by the app (leave empty)"

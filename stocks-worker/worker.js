@@ -308,7 +308,8 @@ async function gatherStats(env) {
     voice: { chirp, wavenet, costGBP: +(chirp.costGBP + wavenet.costGBP).toFixed(2),
       briefings: { chars: u.chars_briefings || 0, recordings: u.briefings_recorded || 0 },
       storiesAhead: { chars: u.chars_stories_ahead || 0, stories: u.stories_recorded_ahead || 0 },
-      onDemand: { chars: demandChars, stories: demandStories, dailyCap: DAILY_STORY_CHARS } },
+      onDemand: { chars: demandChars, stories: demandStories, dailyCap: DAILY_STORY_CHARS },
+      elevenlabs: { chars: u.chars_elevenlabs || 0 } },
     plays: { briefings: briefingPlays, stories: storyPlays, top },
     news: { runs: u.runs || 0, added: u.stories_added || 0, merged: u.stories_merged || 0, skipped: u.stories_skipped || 0, aiRequests: u.ai_requests || 0 },
     days: Object.entries(updater.days || {}).slice(-14).reverse().map(([day, x]) => ({ day, runs: x.runs || 0, added: x.stories_added || 0,
@@ -334,6 +335,7 @@ async function statsPage(env) {
 <div class="wrap"><header>${SCOUT_MARK}<div><h1>Scout numbers</h1><div class="sub">${esc(month)} · last news update ${esc((d.updated || "not yet").slice(0, 16).replace("T", " "))} UTC</div></div></header>
 <h2>Voice</h2>${meter("Chirp 3: HD · briefings and the top 10", v.chirp, `${fmt(v.briefings.recordings)} briefings, ${fmt(v.storiesAhead.stories)} stories`)}
 ${meter("WaveNet · stories played on demand", v.wavenet, `${fmt(v.onDemand.stories)} stories, up to ${fmt(v.onDemand.dailyCap)} a day`)}
+<div class="card"><div class="l">ElevenLabs · Tech and World briefings</div><div class="v">${fmt(v.elevenlabs?.chars)} <span class="of">characters this month</span></div><div class="n">Counted against your ElevenLabs plan's credits</div></div>
 <h2>Listening</h2><div class="g">${tile("Briefings played", fmt(d.plays.briefings))}${tile("Stories played", fmt(d.plays.stories))}</div>
 <h2>Most played this month</h2><div class="card">${d.plays.top.length ? `<ol>${d.plays.top.map((t) => `<li>${esc(t.title)} <span>· ${esc(t.kind)} · ${t.n}</span></li>`).join("")}</ol>` : `<div class="n">Nothing played yet.</div>`}</div>
 <h2>News</h2><div class="g">${tile("Updates", fmt(d.news.runs))}${tile("New stories", fmt(d.news.added))}${tile("Merged", fmt(d.news.merged))}${tile("Skipped", fmt(d.news.skipped))}${tile("AI requests", fmt(d.news.aiRequests))}</div>

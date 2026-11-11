@@ -86,6 +86,34 @@ async function pickVoice(key, want) {
 }
 
 let spoken = 0;   // characters sent to Google this run, for the stats page
+let elevenChars = 0;   // characters sent to ElevenLabs this run
+
+// ElevenLabs reads the Tech and World briefings (and their openings) when its key is set; the
+// other briefings, the top stories and the hold-on lines stay with Google. If ElevenLabs fails,
+// that briefing is recorded with Google instead, so there's always a recording.
+//   ELEVENLABS_API_KEY  (secret)  the key from elevenlabs.io › Developers › API keys
+//   ELEVENLABS_VOICE_ID (optional) a voice from the Voice Library; default Alice (British, clear)
+//   ELEVENLABS_MODEL    (optional) default eleven_multilingual_v2, the most natural
+const ELEVEN_SECTIONS = ['Tech', 'World'];
+const ELEVEN_VOICE = 'Xb7hH8MSUJpSbSDYk0k2';   // Alice
+const ELEVEN_MODEL = 'eleven_multilingual_v2';
+
+async function speakEleven(text) {
+  const key = (process.env.ELEVENLABS_API_KEY || '').trim();
+  const voice = (process.env.ELEVENLABS_VOICE_ID || '').trim() || ELEVEN_VOICE;
+  const model = (process.env.ELEVENLABS_MODEL || '').trim() || ELEVEN_MODEL;
+  const plain = text.replace(/\s*\[pause[^\]]*\]\s*/g, ' ... ');
+  const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voice}?output_format=mp3_44100_128`, {
+    method: 'POST', signal: AbortSignal.timeout(120000),
+    headers: { 'xi-api-key': key, 'Content-Type': 'application/json', Accept: 'audio/mpeg' },
+    body: JSON.stringify({ text: plain, model_id: model,
+      voice_settings: { stability: 0.45, similarity_boost: 0.8, style: 0.25, use_speaker_boost: true, speed: 1.05 } }),
+  });
+  if (!r.ok) throw new Error(`ElevenLabs answered ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  elevenChars += plain.length;
+  return Buffer.from(await r.arrayBuffer());
+}
+
 
 /** How many stories are recorded ahead each run (in Chirp 3: HD), and how long a story's recording
  *  is kept. Any other story is recorded in WaveNet by the Scout service the first time it's played. */
@@ -137,13 +165,23 @@ export async function makeAudio(briefing, log = console.log, news = null) {
       const brief = sections[sec];
       if (!brief?.title) continue;
       try {
-        const mp3 = await speak(key, name, script(sec, brief));
+        // Tech and World with ElevenLabs when its key is set (Google if that fails)
+        const eleven = id === 'chirp' && ELEVEN_SECTIONS.includes(sec) && (process.env.ELEVENLABS_API_KEY || '').trim();
+        let engine = 'google';
+        const say = async (text) => {
+          if (eleven) {
+            try { const b = await speakEleven(text); engine = 'elevenlabs'; return b; }
+            catch (e) { log(`ElevenLabs (${sec}): ${e.message}; using Google instead.`); }
+          }
+          return speak(key, name, text);
+        };
+        const mp3 = await say(script(sec, brief));
         const file = `audio-${sec}-${id}.mp3`;
         if (await publishBinary(file, mp3, 'audio/mpeg')) {
           const entry = (index.sections[sec] ||= { title: brief.title, briefing: brief.generated || null, edition: edition(brief), files: {} });
-          entry.files[id] = { path: `/audio/${sec}-${id}.mp3`, bytes: mp3.length };
+          entry.files[id] = { path: `/audio/${sec}-${id}.mp3`, bytes: mp3.length, engine };
           // the short friendly opening, in the same voice
-          const intro = await speak(key, name, opener(sec, brief));
+          const intro = await say(opener(sec, brief));
           if (await publishBinary(`audio-${sec}-intro.mp3`, intro, 'audio/mpeg')) {
             entry.files.intro = { path: `/audio/${sec}-intro.mp3`, bytes: intro.length, text: opener(sec, brief) };
           }
@@ -191,9 +229,11 @@ export async function makeAudio(briefing, log = console.log, news = null) {
     }
   }
   if (made || storiesMade) await publishFile('audio.json', index);
-  await addStats({ chars_briefings: briefingChars, chars_stories_ahead: spoken - briefingChars, stories_recorded_ahead: storiesMade, briefings_recorded: made });
-  log(`Spoken briefings: ${made} recordings (${Object.values(index.voices).map((v) => v.name).join(', ') || 'no voices'}); ${storiesMade} top stories recorded ahead; ${spoken} characters.`);
+  await addStats({ chars_briefings: briefingChars, chars_stories_ahead: spoken - briefingChars, stories_recorded_ahead: storiesMade, briefings_recorded: made, chars_elevenlabs: elevenChars });
+  const byEleven = Object.entries(index.sections).filter(([, v]) => v.files?.chirp?.engine === 'elevenlabs').map(([k]) => k);
+  log(`Spoken briefings: ${made} recordings (${Object.values(index.voices).map((v) => v.name).join(', ') || 'no voices'}${byEleven.length ? `; ElevenLabs for ${byEleven.join(' and ')}, ${elevenChars} characters` : ''}); ${storiesMade} top stories recorded ahead; ${spoken} Google characters.`);
   spoken = 0;
+  elevenChars = 0;
   return index;
 }
 

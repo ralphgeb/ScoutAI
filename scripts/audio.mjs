@@ -98,6 +98,47 @@ const ELEVEN_SECTIONS = ['Tech', 'World'];
 const ELEVEN_VOICE = 'Xb7hH8MSUJpSbSDYk0k2';   // Alice
 const ELEVEN_MODEL = 'eleven_multilingual_v2';
 
+// Gemini TTS (Google's newer, directable voices) for Finance (Flash) and Fashion (Pro), with the
+// same Google key. Told how to read, in the same Aoede voice as Chirp, so the two can be compared.
+// If Gemini fails, that briefing is recorded with Chirp 3: HD instead.
+const GEMINI = { Finance: 'gemini-2.5-flash-tts', Fashion: 'gemini-2.5-pro-tts' };
+const GEMINI_VOICE = 'Aoede';
+const GEMINI_PROMPT = 'Read this as a warm, lively British newsreader presenting a morning news briefing: '
+  + 'natural, friendly and clear, at a brisk but relaxed pace, with a light smile in the voice.';
+let geminiChars = { flash: 0, pro: 0 };
+
+/** Gemini TTS takes up to about 4,000 bytes of text a request, so longer scripts go in parts. */
+function chunks(text, max = 3600) {
+  const out = [];
+  let cur = '';
+  for (const para of text.split(/\n\n+/)) {
+    if (cur && Buffer.byteLength(cur + '\n\n' + para) > max) { out.push(cur); cur = para; }
+    else cur = cur ? `${cur}\n\n${para}` : para;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+async function speakGemini(key, model, text) {
+  const plain = text.replace(/\s*\[pause[^\]]*\]\s*/g, ' ... ');
+  const parts = [];
+  for (const part of chunks(plain)) {
+    let r;
+    for (const languageCode of ['en-GB', 'en-US']) {
+      r = await fetch(`${API}/text:synthesize?key=${key}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(180000),
+        body: JSON.stringify({ input: { prompt: GEMINI_PROMPT, text: part }, voice: { languageCode, name: GEMINI_VOICE, modelName: model },
+          audioConfig: { audioEncoding: 'MP3' } }),
+      });
+      if (r.ok || r.status !== 400) break;   // a language Gemini doesn't take: the prompt asks for British anyway
+    }
+    if (!r.ok) throw new Error(`Gemini (${model}) answered ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    parts.push(Buffer.from((await r.json()).audioContent, 'base64'));
+  }
+  geminiChars[/pro/.test(model) ? 'pro' : 'flash'] += plain.length;
+  return Buffer.concat(parts);
+}
+
 async function speakEleven(text) {
   const key = (process.env.ELEVENLABS_API_KEY || '').trim();
   const voice = (process.env.ELEVENLABS_VOICE_ID || '').trim() || ELEVEN_VOICE;
@@ -167,11 +208,16 @@ export async function makeAudio(briefing, log = console.log, news = null) {
       try {
         // Tech and World with ElevenLabs when its key is set (Google if that fails)
         const eleven = id === 'chirp' && ELEVEN_SECTIONS.includes(sec) && (process.env.ELEVENLABS_API_KEY || '').trim();
+        const gemini = id === 'chirp' ? GEMINI[sec] : null;
         let engine = 'google';
         const say = async (text) => {
           if (eleven) {
             try { const b = await speakEleven(text); engine = 'elevenlabs'; return b; }
             catch (e) { log(`ElevenLabs (${sec}): ${e.message}; using Google instead.`); }
+          }
+          if (gemini) {
+            try { const b = await speakGemini(key, gemini, text); engine = gemini; return b; }
+            catch (e) { log(`${e.message}; using Chirp 3: HD for ${sec} instead.`); }
           }
           return speak(key, name, text);
         };
@@ -229,11 +275,14 @@ export async function makeAudio(briefing, log = console.log, news = null) {
     }
   }
   if (made || storiesMade) await publishFile('audio.json', index);
-  await addStats({ chars_briefings: briefingChars, chars_stories_ahead: spoken - briefingChars, stories_recorded_ahead: storiesMade, briefings_recorded: made, chars_elevenlabs: elevenChars });
+  await addStats({ chars_briefings: briefingChars, chars_stories_ahead: spoken - briefingChars, stories_recorded_ahead: storiesMade, briefings_recorded: made, chars_elevenlabs: elevenChars,
+    chars_gemini_flash: geminiChars.flash, chars_gemini_pro: geminiChars.pro });
   const byEleven = Object.entries(index.sections).filter(([, v]) => v.files?.chirp?.engine === 'elevenlabs').map(([k]) => k);
-  log(`Spoken briefings: ${made} recordings (${Object.values(index.voices).map((v) => v.name).join(', ') || 'no voices'}${byEleven.length ? `; ElevenLabs for ${byEleven.join(' and ')}, ${elevenChars} characters` : ''}); ${storiesMade} top stories recorded ahead; ${spoken} Google characters.`);
+  const byGemini = Object.entries(index.sections).filter(([, v]) => /gemini/.test(v.files?.chirp?.engine || '')).map(([k, v]) => `${k} (${v.files.chirp.engine})`);
+  log(`Spoken briefings: ${made} recordings (${Object.values(index.voices).map((v) => v.name).join(', ') || 'no voices'}${byEleven.length ? `; ElevenLabs for ${byEleven.join(' and ')}, ${elevenChars} characters` : ''}${byGemini.length ? `; Gemini for ${byGemini.join(', ')}` : ''}); ${storiesMade} top stories recorded ahead; ${spoken} Google characters.`);
   spoken = 0;
   elevenChars = 0;
+  geminiChars = { flash: 0, pro: 0 };
   return index;
 }
 

@@ -87,8 +87,9 @@ async function pickVoice(key, want) {
 
 let spoken = 0;   // characters sent to Google this run, for the stats page
 
-/** How many stories are recorded ahead each run, and how long a story's recording is kept. */
-const TOP_STORIES = 15;
+/** How many stories are recorded ahead each run (in Chirp 3: HD), and how long a story's recording
+ *  is kept. Any other story is recorded in WaveNet by the Scout service the first time it's played. */
+const TOP_STORIES = 10;
 const STORY_DAYS = 10;
 
 /** What a story's recording reads: the headline, Scout's summary and its key points. */
@@ -98,21 +99,26 @@ export function storyScript(st) {
 }
 
 /** Short lines the app plays while a story nobody has played yet is being recorded. */
+// Two short sentences with a pause between them (Chirp 3: HD's [pause long] markup).
 const HOLD = [
-  'Give me a second, let me put this one together for you. Just a few more seconds and I\'ll be with you.',
-  'Hold on, I\'m getting this story ready for you. Almost there, it\'ll only take a moment.',
-  'Bear with me a second while I put this together. Nearly there, I\'ll be right with you.',
-  'One moment, I\'m just preparing this story for you. A couple more seconds and we\'re off.',
+  'Okay, getting this story for you now. [pause long] A few more seconds and it\'ll be ready.',
+  'One moment, I\'m putting this one together. [pause long] Nearly there.',
+  'Right, fetching this story for you. [pause long] Just a couple more seconds.',
+  'Hold on, I\'m getting it ready. [pause long] Almost done.',
 ];
 /** Bump when the lines change, so they're recorded again. */
-const HOLD_VERSION = 2;
+const HOLD_VERSION = 3;
 
 async function speak(key, voice, text) {
   spoken += text.length;
-  const r = await fetch(`${API}/text:synthesize?key=${key}`, {
+  // lines with [pause] marks go as markup (Chirp 3: HD); if that's refused, as plain text
+  const markup = /\[pause/.test(text);
+  const send = (input) => fetch(`${API}/text:synthesize?key=${key}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(90000),
-    body: JSON.stringify({ input: { text }, voice: { languageCode: LANG, name: voice }, audioConfig: { audioEncoding: 'MP3', speakingRate: RATE } }),
+    body: JSON.stringify({ input, voice: { languageCode: LANG, name: voice }, audioConfig: { audioEncoding: 'MP3', speakingRate: RATE } }),
   });
+  let r = await send(markup ? { markup: text } : { text });
+  if (!r.ok && markup) r = await send({ text: text.replace(/\s*\[pause[^\]]*\]\s*/g, ' ... ') });
   if (!r.ok) throw new Error(`synthesize (${voice}) answered ${r.status}: ${(await r.text()).slice(0, 200)}`);
   return Buffer.from((await r.json()).audioContent, 'base64');
 }

@@ -100,6 +100,9 @@ jobs:
         run: |
           pip install --quiet --upgrade yfinance financedatabase ddgs
           npm install --no-save --no-audit --no-fund --silent web-push@3.6.7
+          # ffmpeg turns Gemini's raw sound into MP3 (Finance and Fashion briefings)
+          command -v ffmpeg >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg >/dev/null; }
+          ffmpeg -version | head -1
 
       - name: Collect and analyse news
         if: steps.again.outputs.go == 'true'

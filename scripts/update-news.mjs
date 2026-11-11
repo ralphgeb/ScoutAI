@@ -444,6 +444,8 @@ let batchTimer = null;
 const API = 'https://api.anthropic.com/v1/messages';
 const apiHeaders = (apiKey) => ({ 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' });
 let batchStats = { sent: 0, done: 0, fallback: 0 };
+/** Every request to Claude this run (stories, briefings, pictures, stock summaries), for /stats. */
+let aiCalls = 0;
 
 function batchCall(body, apiKey) {
   return new Promise((resolve, reject) => {
@@ -495,7 +497,7 @@ async function flushBatch() {
   items.forEach((it, i) => {
     const r = results.get(`r${i}`);
     const tool = r?.type === 'succeeded' ? (r.message?.content || []).find((c) => c.type === 'tool_use') : null;
-    if (tool?.input) { batchStats.done++; it.resolve(tool.input); } else retry.push(it);
+    if (tool?.input) { batchStats.done++; aiCalls++; it.resolve(tool.input); } else retry.push(it);
   });
   if (retry.length) await direct(retry);
 }
@@ -503,6 +505,7 @@ async function flushBatch() {
 const withCache = (body) => (typeof body.system === 'string' ? { ...body, system: [{ type: 'text', text: body.system, cache_control: { type: 'ephemeral' } }] } : body);
 
 async function callDirect(body, apiKey) {
+  aiCalls++;
   // Cache the long, repeated instructions so later requests in the run are cheaper and faster.
   if (typeof body.system === 'string') body = { ...body, system: [{ type: 'text', text: body.system, cache_control: { type: 'ephemeral' } }] };
   let lastErr;
@@ -1547,7 +1550,7 @@ export async function main() {
   await writeJSON(SEEN_FILE, [...done, ...seen].slice(0, MAX_SEEN));
   if (USE_BATCH) log(`AI requests at half price: ${batchStats.done}; sent normally: ${batchStats.fallback}.`);
   log(`Done: ${stats.added} new stories, ${stats.merged} merged into existing, ${stats.dropped} skipped as irrelevant. ${news.stories.length} stories total.`);
-  await addStats({ runs: 1, stories_added: stats.added, stories_merged: stats.merged, stories_skipped: stats.dropped, ai_requests: batchStats.done + batchStats.fallback })
+  await addStats({ runs: 1, stories_added: stats.added, stories_merged: stats.merged, stories_skipped: stats.dropped, ai_requests: aiCalls })
     .catch(() => {});
 }
 

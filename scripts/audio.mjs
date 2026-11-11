@@ -6,6 +6,7 @@
 //
 // Needs the GOOGLE_TTS_KEY secret (an API key restricted to the Text-to-Speech API).
 
+import { spawn } from 'node:child_process';
 import { publishFile, publishBinary, readFile, addStats } from './publish.mjs';
 
 const API = 'https://texttospeech.googleapis.com/v1';
@@ -98,16 +99,17 @@ const ELEVEN_SECTIONS = ['Tech', 'World'];
 const ELEVEN_VOICE = 'Xb7hH8MSUJpSbSDYk0k2';   // Alice
 const ELEVEN_MODEL = 'eleven_multilingual_v2';
 
-// Gemini TTS (Google's newer, directable voices) for Finance (Flash) and Fashion (Pro), with the
-// same Google key. Told how to read, in the same Aoede voice as Chirp, so the two can be compared.
-// If Gemini fails, that briefing is recorded with Chirp 3: HD instead.
-const GEMINI = { Finance: 'gemini-2.5-flash-tts', Fashion: 'gemini-2.5-pro-tts' };
+// Gemini TTS (Google's newer, directable voices) for Finance (Flash) and Fashion (Pro), through the
+// Gemini API with a Google AI Studio key (GEMINI_API_KEY). Told how to read, in the same Aoede voice
+// as Chirp, so the two can be compared. Gemini sends raw sound, which ffmpeg (on GitHub's runners)
+// turns into MP3. If Gemini fails, that briefing is recorded with Chirp 3: HD instead.
+const GEMINI = { Finance: 'gemini-2.5-flash-preview-tts', Fashion: 'gemini-2.5-pro-preview-tts' };
 const GEMINI_VOICE = 'Aoede';
 const GEMINI_PROMPT = 'Read this as a warm, lively British newsreader presenting a morning news briefing: '
   + 'natural, friendly and clear, at a brisk but relaxed pace, with a light smile in the voice.';
 let geminiChars = { flash: 0, pro: 0 };
 
-/** Gemini TTS takes up to about 4,000 bytes of text a request, so longer scripts go in parts. */
+/** Long scripts go in parts, so each request stays small. */
 function chunks(text, max = 3600) {
   const out = [];
   let cur = '';
@@ -119,24 +121,43 @@ function chunks(text, max = 3600) {
   return out;
 }
 
-async function speakGemini(key, model, text) {
+/** Raw 24 kHz 16-bit mono sound to MP3, with ffmpeg. */
+function toMp3(pcm) {
+  return new Promise((resolve, reject) => {
+    const ff = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 's16le', '-ar', '24000', '-ac', '1', '-i', 'pipe:0',
+      '-codec:a', 'libmp3lame', '-b:a', '96k', '-f', 'mp3', 'pipe:1']);
+    const out = [];
+    let err = '';
+    ff.stdout.on('data', (d) => out.push(d));
+    ff.stderr.on('data', (d) => { err += d; });
+    ff.on('error', reject);
+    ff.on('close', (code) => (code === 0 ? resolve(Buffer.concat(out)) : reject(new Error(`ffmpeg: ${err.slice(0, 200)}`))));
+    ff.stdin.end(pcm);
+  });
+}
+
+async function speakGemini(_googleKey, model, text) {
+  const key = (process.env.GEMINI_API_KEY || '').trim();
+  if (!key) throw new Error('Gemini needs the GEMINI_API_KEY secret (a Google AI Studio key)');
   const plain = text.replace(/\s*\[pause[^\]]*\]\s*/g, ' ... ');
-  const parts = [];
+  const pcm = [];
   for (const part of chunks(plain)) {
-    let r;
-    for (const languageCode of ['en-GB', 'en-US']) {
-      r = await fetch(`${API}/text:synthesize?key=${key}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(180000),
-        body: JSON.stringify({ input: { prompt: GEMINI_PROMPT, text: part }, voice: { languageCode, name: GEMINI_VOICE, modelName: model },
-          audioConfig: { audioEncoding: 'MP3' } }),
-      });
-      if (r.ok || r.status !== 400) break;   // a language Gemini doesn't take: the prompt asks for British anyway
-    }
-    if (!r.ok) throw new Error(`Gemini (${model}) answered ${r.status}: ${(await r.text()).slice(0, 200)}`);
-    parts.push(Buffer.from((await r.json()).audioContent, 'base64'));
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+      method: 'POST', signal: AbortSignal.timeout(180000),
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: `${GEMINI_PROMPT}\n\n${part}` }] }],
+        generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: GEMINI_VOICE } } } },
+      }),
+    });
+    if (!r.ok) throw new Error(`Gemini (${model}) answered ${r.status}: ${(await r.text()).slice(0, 300)}`);
+    const data = (await r.json()).candidates?.[0]?.content?.parts?.find((p) => p.inlineData)?.inlineData?.data;
+    if (!data) throw new Error(`Gemini (${model}) sent no sound`);
+    pcm.push(Buffer.from(data, 'base64'));
   }
+  const mp3 = await toMp3(Buffer.concat(pcm));
   geminiChars[/pro/.test(model) ? 'pro' : 'flash'] += plain.length;
-  return Buffer.concat(parts);
+  return mp3;
 }
 
 async function speakEleven(text) {

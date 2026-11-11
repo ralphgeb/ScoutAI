@@ -99,11 +99,13 @@ export function storyScript(st) {
 
 /** Short lines the app plays while a story nobody has played yet is being recorded. */
 const HOLD = [
-  'Hold on a second while I get this one ready for you. Almost there.',
-  'One moment, I\'m just getting this story ready for you.',
-  'Bear with me a second, this one\'s on its way.',
-  'Just a moment while I put this story together for you.',
+  'Give me a second, let me put this one together for you. Just a few more seconds and I\'ll be with you.',
+  'Hold on, I\'m getting this story ready for you. Almost there, it\'ll only take a moment.',
+  'Bear with me a second while I put this together. Nearly there, I\'ll be right with you.',
+  'One moment, I\'m just preparing this story for you. A couple more seconds and we\'re off.',
 ];
+/** Bump when the lines change, so they're recorded again. */
+const HOLD_VERSION = 2;
 
 async function speak(key, voice, text) {
   spoken += text.length;
@@ -149,7 +151,8 @@ export async function makeAudio(briefing, log = console.log, news = null) {
   const before = (await readFile('audio.json')) || {};
 
   // the "hold on" lines, recorded once
-  index.hold = before.hold || [];
+  index.hold = before.holdVersion === HOLD_VERSION ? before.hold || [] : [];
+  index.holdVersion = HOLD_VERSION;
   if (name && index.hold.length < HOLD.length) {
     index.hold = [];
     for (let i = 0; i < HOLD.length; i++) {

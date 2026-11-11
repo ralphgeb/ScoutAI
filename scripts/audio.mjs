@@ -136,7 +136,7 @@ function toMp3(pcm) {
   });
 }
 
-async function speakGemini(_googleKey, model, text) {
+async function speakGemini(_googleKey, model, text, voiceName = GEMINI_VOICE) {
   const key = (process.env.GEMINI_API_KEY || '').trim();
   if (!key) throw new Error('Gemini needs the GEMINI_API_KEY secret (a Google AI Studio key)');
   const plain = text.replace(/\s*\[pause[^\]]*\]\s*/g, ' ... ');
@@ -147,7 +147,7 @@ async function speakGemini(_googleKey, model, text) {
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
       body: JSON.stringify({
         contents: [{ parts: [{ text: `${GEMINI_PROMPT}\n\n${part}` }] }],
-        generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: GEMINI_VOICE } } } },
+        generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName } } } },
       }),
     });
     if (!r.ok) {
@@ -321,6 +321,39 @@ export const CHIRP_SAMPLES = {
 
 /** Records the start of the Tech briefing in each sample voice (every British Standard and WaveNet
  *  voice, and the Chirp 3: HD voices above), for the /voices page. */
+/** Gemini voices to compare, with Google's description of each (Aoede is the current one). */
+export const GEMINI_SAMPLES = {
+  Aoede: 'breezy (current)', Sulafat: 'warm', Achernar: 'soft', Vindemiatrix: 'gentle', Despina: 'smooth',
+  Callirrhoe: 'easy-going', Laomedeia: 'upbeat', Zephyr: 'bright', Kore: 'firm', Erinome: 'clear',
+  Sadaltager: 'knowledgeable', Iapetus: 'clear', Algieba: 'smooth', Achird: 'friendly', Gacrux: 'mature',
+};
+
+/** Records the start of the Tech briefing in each Gemini voice (Flash, with the newsreader
+ *  direction) and adds them to the /voices page, keeping the other samples there. */
+export async function makeGeminiSamples(briefing, log = console.log) {
+  const brief = briefing.sections?.Tech;
+  if (!brief?.title) { log('Gemini samples skipped (no Tech briefing).'); return; }
+  const lead = String(brief.summary || '').split(/\n\s*\n/)[0]?.trim() || '';
+  const text = [opener('Tech', brief), brief.title, lead].filter(Boolean).join('\n\n').slice(0, 900);
+  const before = (await readFile('audio-samples.json')) || { samples: [] };
+  const out = { generated: new Date().toISOString(), samples: (before.samples || []).filter((s) => !String(s.tier).startsWith('Gemini')) };
+  let made = 0;
+  for (const [voice, mood] of Object.entries(GEMINI_SAMPLES)) {
+    try {
+      const mp3 = await speakGemini(null, GEMINI.Finance, text, voice);
+      const id = `Gem${voice}`;
+      if (await publishBinary(`audio-sample-${id}.mp3`, mp3, 'audio/mpeg')) {
+        out.samples.push({ tier: 'Gemini 2.5 Flash', voice: id, label: voice, name: voice, mood, path: `/audio/sample-${id}.mp3` });
+        made++;
+      }
+    } catch (e) { log(`Gemini sample ${voice} skipped: ${e.message}`); }
+  }
+  await publishFile('audio-samples.json', out);
+  await addStats({ chars_gemini_flash: geminiChars.flash });
+  log(`Gemini samples: ${made} voices (${text.length} characters each, ${geminiChars.flash} in all).`);
+  geminiChars = { flash: 0, pro: 0 };
+}
+
 export async function makeSamples(briefing, log = console.log) {
   const key = (process.env.GOOGLE_TTS_KEY || '').trim();
   if (!key) { log('Voice samples skipped (no GOOGLE_TTS_KEY).'); return; }

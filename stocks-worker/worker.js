@@ -150,10 +150,10 @@ export default {
       const list = (await env.REQUESTS.get("file:audio-samples.json", "json"))?.samples || [];
       const tiers = [...new Set(list.map((s) => s.tier || "Chirp 3: HD"))];
       const rows = tiers.map((t) => `<h2>${t}</h2>` + list.filter((s) => (s.tier || "Chirp 3: HD") === t)
-        .map((s) => `<div class="v"><b>${s.voice.replace(/^(Standard|Wavenet)-/, "")}</b> <span>${s.mood || ""}</span><audio controls preload="none" src="${s.path}"></audio></div>`).join("")).join("") || "<p>No samples recorded yet.</p>";
+        .map((s) => `<div class="v"><b>${s.label || s.voice.replace(/^(Standard|Wavenet)-/, "")}</b> <span>${s.mood || ""}</span><audio controls preload="none" src="${s.path}"></audio></div>`).join("")).join("") || "<p>No samples recorded yet.</p>";
       return new Response(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Scout voices</title>
 <style>body{font:16px -apple-system,system-ui,sans-serif;margin:0 auto;max-width:560px;padding:20px 16px;background:#faf8f5;color:#1c1b19}h1{font-size:24px}h2{font-size:18px;margin-top:26px}.v{background:#fff;border-radius:14px;padding:14px;margin:10px 0}.v span{color:#888}audio{width:100%;margin-top:8px}@media(prefers-color-scheme:dark){body{background:#151413;color:#eee}.v{background:#242220}}</style>
-<h1>Scout voices</h1><p>The start of today's Tech briefing in each voice.</p>${rows}`, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
+<h1>Scout voices</h1><p>The start of today's Tech briefing in each voice. Gemini voices are read with a warm British newsreader direction.</p>${rows}`, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
     }
 
     if (["/privacy", "/terms", "/support"].includes(url.pathname) && request.method === "GET") {

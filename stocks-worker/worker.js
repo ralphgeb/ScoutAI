@@ -11,7 +11,7 @@
 //   GET  /prices.json                           → prices for ~3,500 stocks and yesterday's risers and fallers
 //   GET  /audio.json, /audio/<Section>-<chirp|intro>.mp3 → the spoken briefings
 //   GET  /audio/story/<id>.mp3                → a story read aloud (recorded the first time anyone plays it)
-//   POST /stats/play {kind, id, title}          → counts a play;  GET /stats → the numbers page
+//   POST /stats/play {kind, id, title}          → counts a play;  GET /stats → the numbers page, /stats.json → the same as data
 //   GET  /news.json, /briefing.json             → the latest news and briefing, fresh within a minute
 //                                                 (GitHub's own file server can lag by five minutes)
 //
@@ -107,6 +107,12 @@ export default {
 
     if (url.pathname === "/stats" && request.method === "GET") {
       return statsPage(env);
+    }
+
+    if (url.pathname === "/stats.json" && request.method === "GET") {
+      const r = json(await gatherStats(env));
+      r.headers.set("Cache-Control", "no-store");
+      return r;
     }
 
     const audio = url.pathname.match(/^\/audio\/(?:(Tech|Finance|World|Fashion)-(standard|wavenet|chirp|intro)|sample-([A-Za-z]+(?:-[A-Z])?)|hold-([0-9]))\.mp3$/);
@@ -275,7 +281,8 @@ async function countPlay(env, kind, id, title) {
   await env.REQUESTS.put(key, String(n), { expirationTtl: 400 * 86400, metadata: { n, title } });
 }
 
-async function statsPage(env) {
+/** The numbers, for /stats here and halopro.xyz/scout (which reads /stats.json). */
+async function gatherStats(env) {
   const month = new Date().toISOString().slice(0, 7);
   const updater = (await env.REQUESTS.get("file:stats-updater.json", "json")) || { months: {}, days: {} };
   const u = updater.months?.[month] || {};
@@ -288,11 +295,34 @@ async function statsPage(env) {
   const chars = (u.chars_briefings || 0) + (u.chars_stories_ahead || 0) + demandChars;
   const free = 1000000;
   const over = Math.max(0, chars - free);
+  return {
+    month, updated: updater.updated || null,
+    voice: { chars, free, over, costGBP: +(over / 1e6 * 22.55).toFixed(2),
+      briefings: { chars: u.chars_briefings || 0, recordings: u.briefings_recorded || 0 },
+      storiesAhead: { chars: u.chars_stories_ahead || 0, stories: u.stories_recorded_ahead || 0 },
+      onDemand: { chars: demandChars, stories: demandStories, dailyCap: DAILY_STORY_CHARS } },
+    plays: { briefings: briefingPlays, stories: storyPlays, top },
+    news: { runs: u.runs || 0, added: u.stories_added || 0, merged: u.stories_merged || 0, skipped: u.stories_skipped || 0, aiRequests: u.ai_requests || 0 },
+    days: Object.entries(updater.days || {}).slice(-14).reverse().map(([day, x]) => ({ day, runs: x.runs || 0, added: x.stories_added || 0,
+      aiRequests: x.ai_requests || 0, chars: (x.chars_briefings || 0) + (x.chars_stories_ahead || 0) })),
+  };
+}
+
+async function statsPage(env) {
+  const d = await gatherStats(env);
+  const month = d.month;
+  const updater = { updated: d.updated };
+  const u = { chars_briefings: d.voice.briefings.chars, briefings_recorded: d.voice.briefings.recordings,
+    chars_stories_ahead: d.voice.storiesAhead.chars, stories_recorded_ahead: d.voice.storiesAhead.stories,
+    runs: d.news.runs, stories_added: d.news.added, stories_merged: d.news.merged, stories_skipped: d.news.skipped, ai_requests: d.news.aiRequests };
+  const demandChars = d.voice.onDemand.chars, demandStories = d.voice.onDemand.stories;
+  const storyPlays = d.plays.stories, briefingPlays = d.plays.briefings, top = d.plays.top;
+  const chars = d.voice.chars, free = d.voice.free, over = d.voice.over;
   const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
   const fmt = (n) => Number(n || 0).toLocaleString("en-GB");
   const tile = (label, value, note = "") => `<div class="t"><div class="l">${label}</div><div class="v">${value}</div>${note ? `<div class="n">${note}</div>` : ""}</div>`;
-  const days = Object.entries(updater.days || {}).slice(-14).reverse()
-    .map(([d, x]) => `<tr><td>${d.slice(5)}</td><td>${fmt(x.runs)}</td><td>${fmt(x.stories_added)}</td><td>${fmt(x.ai_requests)}</td><td>${fmt((x.chars_briefings || 0) + (x.chars_stories_ahead || 0))}</td></tr>`).join("");
+  const days = d.days
+    .map((x) => `<tr><td>${x.day.slice(5)}</td><td>${fmt(x.runs)}</td><td>${fmt(x.added)}</td><td>${fmt(x.aiRequests)}</td><td>${fmt(x.chars)}</td></tr>`).join("");
   const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Scout numbers</title>
 <style>:root{--bg:#f6f4f1;--card:#fff;--text:#1c1b19;--dim:#8a857e;--accent:#e4572e}@media(prefers-color-scheme:dark){:root{--bg:#141312;--card:#22201e;--text:#eee;--dim:#8f8a83}}
 body{font:15px -apple-system,system-ui,sans-serif;margin:0 auto;max-width:720px;padding:20px 16px 40px;background:var(--bg);color:var(--text)}h1{font-size:28px;margin:0 0 2px}h2{font-size:17px;margin:26px 0 8px}.sub{color:var(--dim);margin-bottom:16px}

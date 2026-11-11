@@ -104,7 +104,7 @@ const ELEVEN_MODEL = 'eleven_multilingual_v2';
 // as Chirp, so the two can be compared. Gemini sends raw sound, which ffmpeg (on GitHub's runners)
 // turns into MP3. If Gemini fails, that briefing is recorded with Chirp 3: HD instead.
 const GEMINI = { Finance: 'gemini-2.5-flash-preview-tts', Fashion: 'gemini-2.5-pro-preview-tts' };
-const GEMINI_VOICE = 'Aoede';
+const GEMINI_VOICE = 'Callirrhoe';   // easy-going; picked from the /voices samples
 const GEMINI_PROMPT = 'Read this as a warm, lively British newsreader presenting a morning news briefing: '
   + 'natural, friendly and clear, at a brisk but relaxed pace, with a light smile in the voice.';
 let geminiChars = { flash: 0, pro: 0 };
@@ -323,8 +323,8 @@ export const CHIRP_SAMPLES = {
  *  voice, and the Chirp 3: HD voices above), for the /voices page. */
 /** Gemini voices to compare, with Google's description of each (Aoede is the current one). */
 export const GEMINI_SAMPLES = {
-  Aoede: 'breezy (current)', Sulafat: 'warm', Achernar: 'soft', Vindemiatrix: 'gentle', Despina: 'smooth',
-  Callirrhoe: 'easy-going', Laomedeia: 'upbeat', Zephyr: 'bright', Kore: 'firm', Erinome: 'clear',
+  Aoede: 'breezy', Sulafat: 'warm', Achernar: 'soft', Vindemiatrix: 'gentle', Despina: 'smooth',
+  Callirrhoe: 'easy-going (current)', Laomedeia: 'upbeat', Zephyr: 'bright', Kore: 'firm', Erinome: 'clear',
   Sadaltager: 'knowledgeable', Iapetus: 'clear', Algieba: 'smooth', Achird: 'friendly', Gacrux: 'mature',
 };
 

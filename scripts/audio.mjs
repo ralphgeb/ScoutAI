@@ -150,7 +150,13 @@ async function speakGemini(_googleKey, model, text) {
         generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: GEMINI_VOICE } } } },
       }),
     });
-    if (!r.ok) throw new Error(`Gemini (${model}) answered ${r.status}: ${(await r.text()).slice(0, 300)}`);
+    if (!r.ok) {
+      // the whole reason (which limit, which project) on one line, so the log says what to fix
+      const body = await r.text();
+      let why = body;
+      try { const e = JSON.parse(body).error; why = [e.message, ...(e.details || []).map((d) => JSON.stringify(d.violations || d.links || d.reason || d))].join(' | '); } catch { /* as sent */ }
+      throw new Error(`Gemini (${model}) answered ${r.status}: ${why.replace(/\s+/g, ' ').slice(0, 1200)}`);
+    }
     const data = (await r.json()).candidates?.[0]?.content?.parts?.find((p) => p.inlineData)?.inlineData?.data;
     if (!data) throw new Error(`Gemini (${model}) sent no sound`);
     pcm.push(Buffer.from(data, 'base64'));

@@ -218,14 +218,14 @@ async function runIfDue(env) {
 
 // MARK: - Stories read aloud, on demand
 
-// The updater records the day's top 15 stories ahead. Any other story is recorded the first time
-// someone presses play (with Google's Chirp 3: HD voice Aoede, the same as the briefings), kept for
-// 10 days, and played from the store to everyone after that. A daily cap keeps the cost in check:
-// past it, the app reads the story with the phone's own voice instead.
-const STORY_VOICE = "en-GB-Chirp3-HD-Aoede";
+// The updater records the day's top 10 stories ahead (Chirp 3: HD, Aoede). Any other story is
+// recorded the first time someone presses play, in a WaveNet voice close to Aoede (WaveNet has its
+// own free million characters a month), kept for 10 days, and played from the store to everyone
+// after that. A daily cap keeps it inside the free allowance: past it, the phone reads the story.
+const STORY_VOICES = ["en-GB-Wavenet-F", "en-GB-Wavenet-A", "en-GB-Wavenet-C"];   // British, female
 const STORY_RATE = 1.05;
 const STORY_DAYS = 10;
-const DAILY_STORY_CHARS = 30000;   // about 30 stories a day recorded on demand
+const DAILY_STORY_CHARS = 30000;   // about 30 stories a day; 900,000 a month at most, under WaveNet's free million
 
 async function storyAudio(id, env) {
   const headers = { "Content-Type": "audio/mpeg", "Cache-Control": "max-age=86400", ...cors() };
@@ -245,10 +245,14 @@ async function storyAudio(id, env) {
     const day = new Date().toISOString().slice(0, 10), month = day.slice(0, 7);
     const used = Number(await env.REQUESTS.get(`stat:${day}:chars_on_demand`)) || 0;
     if (used + text.length > DAILY_STORY_CHARS) return json({ error: "Daily limit reached" }, 429);
-    const r = await fetch(`https://texttospeech.googleapis.com/v1/text:synthesize?key=${env.GOOGLE_TTS_KEY}`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ input: { text }, voice: { languageCode: "en-GB", name: STORY_VOICE }, audioConfig: { audioEncoding: "MP3", speakingRate: STORY_RATE } }),
-    });
+    let r;
+    for (const name of STORY_VOICES) {
+      r = await fetch(`https://texttospeech.googleapis.com/v1/text:synthesize?key=${env.GOOGLE_TTS_KEY}`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ input: { text }, voice: { languageCode: "en-GB", name }, audioConfig: { audioEncoding: "MP3", speakingRate: STORY_RATE } }),
+      });
+      if (r.ok || r.status !== 400) break;   // a voice Google doesn't know: try the next
+    }
     if (!r.ok) return json({ error: `Google answered ${r.status}` }, 502);
     const b64 = (await r.json()).audioContent || "";
     const bin = atob(b64);
@@ -292,12 +296,16 @@ async function gatherStats(env) {
   const plays = await env.REQUESTS.list({ prefix: `play:${month}:` });
   const top = plays.keys.map((k) => ({ kind: k.name.split(":")[2], n: k.metadata?.n || 0, title: k.metadata?.title || k.name.split(":")[3] }))
     .sort((a, b) => b.n - a.n).slice(0, 15);
-  const chars = (u.chars_briefings || 0) + (u.chars_stories_ahead || 0) + demandChars;
   const free = 1000000;
-  const over = Math.max(0, chars - free);
+  const allowance = (chars, pricePerMillion) => {
+    const over = Math.max(0, chars - free);
+    return { chars, free, over, costGBP: +(over / 1e6 * pricePerMillion).toFixed(2) };
+  };
+  const chirp = allowance((u.chars_briefings || 0) + (u.chars_stories_ahead || 0), 22.55);
+  const wavenet = allowance(demandChars, 12.03);
   return {
     month, updated: updater.updated || null,
-    voice: { chars, free, over, costGBP: +(over / 1e6 * 22.55).toFixed(2),
+    voice: { chirp, wavenet, costGBP: +(chirp.costGBP + wavenet.costGBP).toFixed(2),
       briefings: { chars: u.chars_briefings || 0, recordings: u.briefings_recorded || 0 },
       storiesAhead: { chars: u.chars_stories_ahead || 0, stories: u.stories_recorded_ahead || 0 },
       onDemand: { chars: demandChars, stories: demandStories, dailyCap: DAILY_STORY_CHARS } },
@@ -308,38 +316,43 @@ async function gatherStats(env) {
   };
 }
 
+// Scout's own look: navy ink, the icon's red, light and dark as in the app.
+const SCOUT_MARK = `<svg viewBox="0 0 1024 1024" width="34" height="34" aria-hidden="true"><rect width="1024" height="1024" rx="230" fill="#131B2C"/><g stroke="#fff" stroke-width="30" stroke-linecap="round"><line x1="530" y1="500" x2="330" y2="286"/><line x1="530" y1="500" x2="706" y2="332"/><line x1="530" y1="500" x2="298" y2="510"/><line x1="530" y1="500" x2="426" y2="762"/><line x1="530" y1="500" x2="706" y2="670"/></g><circle cx="330" cy="286" r="70" fill="#fff"/><circle cx="706" cy="332" r="76" fill="#E25555"/><circle cx="298" cy="510" r="44" fill="#9AA3B2"/><circle cx="426" cy="762" r="58" fill="#fff"/><circle cx="706" cy="670" r="54" fill="#fff"/><circle cx="530" cy="500" r="92" fill="#fff"/></svg>`;
+
 async function statsPage(env) {
   const d = await gatherStats(env);
-  const month = d.month;
-  const updater = { updated: d.updated };
-  const u = { chars_briefings: d.voice.briefings.chars, briefings_recorded: d.voice.briefings.recordings,
-    chars_stories_ahead: d.voice.storiesAhead.chars, stories_recorded_ahead: d.voice.storiesAhead.stories,
-    runs: d.news.runs, stories_added: d.news.added, stories_merged: d.news.merged, stories_skipped: d.news.skipped, ai_requests: d.news.aiRequests };
-  const demandChars = d.voice.onDemand.chars, demandStories = d.voice.onDemand.stories;
-  const storyPlays = d.plays.stories, briefingPlays = d.plays.briefings, top = d.plays.top;
-  const chars = d.voice.chars, free = d.voice.free, over = d.voice.over;
   const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
   const fmt = (n) => Number(n || 0).toLocaleString("en-GB");
   const tile = (label, value, note = "") => `<div class="t"><div class="l">${label}</div><div class="v">${value}</div>${note ? `<div class="n">${note}</div>` : ""}</div>`;
-  const days = d.days
-    .map((x) => `<tr><td>${x.day.slice(5)}</td><td>${fmt(x.runs)}</td><td>${fmt(x.added)}</td><td>${fmt(x.aiRequests)}</td><td>${fmt(x.chars)}</td></tr>`).join("");
-  const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Scout numbers</title>
-<style>:root{--bg:#f6f4f1;--card:#fff;--text:#1c1b19;--dim:#8a857e;--accent:#e4572e}@media(prefers-color-scheme:dark){:root{--bg:#141312;--card:#22201e;--text:#eee;--dim:#8f8a83}}
-body{font:15px -apple-system,system-ui,sans-serif;margin:0 auto;max-width:720px;padding:20px 16px 40px;background:var(--bg);color:var(--text)}h1{font-size:28px;margin:0 0 2px}h2{font-size:17px;margin:26px 0 8px}.sub{color:var(--dim);margin-bottom:16px}
-.g{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px}.t{background:var(--card);border-radius:16px;padding:14px}.l{color:var(--dim);font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em}.v{font-size:26px;font-weight:800;margin-top:4px;font-variant-numeric:tabular-nums}.n{color:var(--dim);font-size:12px;margin-top:2px}
-.bar{height:8px;border-radius:4px;background:rgba(128,128,128,.2);overflow:hidden;margin-top:8px}.bar i{display:block;height:100%;background:var(--accent)}
-table{width:100%;border-collapse:collapse;background:var(--card);border-radius:16px;overflow:hidden}td,th{padding:9px 12px;text-align:left;border-bottom:1px solid rgba(128,128,128,.15);font-variant-numeric:tabular-nums}th{color:var(--dim);font-size:12px}ol{background:var(--card);border-radius:16px;padding:12px 12px 12px 36px;margin:0}li{padding:5px 0}li span{color:var(--dim)}</style>
-<h1>Scout numbers</h1><div class="sub">${month} · updated ${esc((updater.updated || "").slice(0, 16).replace("T", " "))} UTC</div>
-<h2>Voice (Google Text-to-Speech)</h2>
-<div class="t"><div class="l">Characters this month</div><div class="v">${fmt(chars)} <span style="font-size:15px;color:var(--dim)">of ${fmt(free)} free</span></div>
-<div class="bar"><i style="width:${Math.min(100, chars / free * 100).toFixed(1)}%"></i></div><div class="n">${over ? `About £${(over / 1e6 * 22.55).toFixed(2)} over the free allowance` : "Inside the free allowance"}</div></div>
-<div class="g" style="margin-top:10px">${tile("Briefings", fmt(u.chars_briefings), `${fmt(u.briefings_recorded)} recordings`)}${tile("Top stories ahead", fmt(u.chars_stories_ahead), `${fmt(u.stories_recorded_ahead)} stories`)}${tile("Played on demand", fmt(demandChars), `${fmt(demandStories)} stories`)}</div>
-<h2>Listening</h2><div class="g">${tile("Briefings played", fmt(briefingPlays))}${tile("Stories played", fmt(storyPlays))}</div>
-<h2>Most played this month</h2>${top.length ? `<ol>${top.map((t) => `<li>${esc(t.title)} <span>· ${t.kind} · ${t.n}</span></li>`).join("")}</ol>` : `<div class="t">Nothing played yet.</div>`}
-<h2>News</h2><div class="g">${tile("Updates", fmt(u.runs))}${tile("New stories", fmt(u.stories_added))}${tile("Merged", fmt(u.stories_merged))}${tile("Skipped", fmt(u.stories_skipped))}${tile("AI requests", fmt(u.ai_requests))}</div>
-<h2>Last 14 days</h2><table><tr><th>Day</th><th>Updates</th><th>New stories</th><th>AI requests</th><th>Characters</th></tr>${days || "<tr><td colspan=5>No days yet.</td></tr>"}</table>`;
+  const meter = (name, a, note) => `<div class="card"><div class="l">${name}</div><div class="v">${fmt(a.chars)} <span class="of">of ${fmt(a.free)} free</span></div>
+<div class="bar"><i style="width:${Math.min(100, a.chars / a.free * 100).toFixed(1)}%"></i></div><div class="n">${a.over ? `About £${a.costGBP.toFixed(2)} over the free allowance` : `Inside the free allowance · ${fmt(a.free - a.chars)} left`} · ${note}</div></div>`;
+  const v = d.voice;
+  const days = d.days.map((x) => `<tr><td>${x.day.slice(8)}/${x.day.slice(5, 7)}</td><td>${fmt(x.runs)}</td><td>${fmt(x.added)}</td><td>${fmt(x.aiRequests)}</td><td>${fmt(x.chars)}</td></tr>`).join("");
+  const month = new Date(d.month + "-01T00:00:00Z").toLocaleDateString("en-GB", { month: "long", year: "numeric", timeZone: "UTC" });
+  const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Scout numbers</title>
+<style>${STATS_CSS}</style>
+<div class="wrap"><header>${SCOUT_MARK}<div><h1>Scout numbers</h1><div class="sub">${esc(month)} · last news update ${esc((d.updated || "not yet").slice(0, 16).replace("T", " "))} UTC</div></div></header>
+<h2>Voice</h2>${meter("Chirp 3: HD · briefings and the top 10", v.chirp, `${fmt(v.briefings.recordings)} briefings, ${fmt(v.storiesAhead.stories)} stories`)}
+${meter("WaveNet · stories played on demand", v.wavenet, `${fmt(v.onDemand.stories)} stories, up to ${fmt(v.onDemand.dailyCap)} a day`)}
+<h2>Listening</h2><div class="g">${tile("Briefings played", fmt(d.plays.briefings))}${tile("Stories played", fmt(d.plays.stories))}</div>
+<h2>Most played this month</h2><div class="card">${d.plays.top.length ? `<ol>${d.plays.top.map((t) => `<li>${esc(t.title)} <span>· ${esc(t.kind)} · ${t.n}</span></li>`).join("")}</ol>` : `<div class="n">Nothing played yet.</div>`}</div>
+<h2>News</h2><div class="g">${tile("Updates", fmt(d.news.runs))}${tile("New stories", fmt(d.news.added))}${tile("Merged", fmt(d.news.merged))}${tile("Skipped", fmt(d.news.skipped))}${tile("AI requests", fmt(d.news.aiRequests))}</div>
+<h2>Last 14 days</h2><div class="card tbl"><table><tr><th>Day</th><th>Updates</th><th>New stories</th><th>AI requests</th><th>Characters</th></tr>${days || "<tr><td colspan=5>No days yet.</td></tr>"}</table></div></div>`;
   return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
 }
+
+const STATS_CSS = `:root{--bg:#F5F6F8;--card:#fff;--ink:#131B2C;--dim:rgba(19,27,44,.5);--faint:rgba(19,27,44,.08);--accent:#E25555}
+@media(prefers-color-scheme:dark){:root{--bg:#0B0F18;--card:#161D2C;--ink:#EEF0F4;--dim:rgba(238,240,244,.5);--faint:rgba(238,240,244,.08)}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+.wrap{max-width:720px;margin:0 auto;padding:22px 16px 48px}header{display:flex;gap:12px;align-items:center}header svg{border-radius:9px;flex:none}
+h1{font-size:28px;font-weight:800;letter-spacing:-.5px;margin:0;color:var(--ink)}.sub{color:var(--dim);font-size:13px}
+h2{font-size:22px;font-weight:800;letter-spacing:-.4px;color:var(--accent);margin:26px 2px 10px}
+.card,.t{background:var(--card);border-radius:22px;padding:16px}.card+.card{margin-top:10px}
+.g{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.l{color:var(--dim);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em}.v{font-size:28px;font-weight:800;font-variant-numeric:tabular-nums;margin-top:2px}.of{font-size:14px;font-weight:600;color:var(--dim)}
+.n{color:var(--dim);font-size:12.5px;margin-top:4px}.bar{height:8px;border-radius:5px;background:var(--faint);overflow:hidden;margin:10px 0 2px}.bar i{display:block;height:100%;background:var(--accent);border-radius:5px}
+ol{margin:0;padding-left:22px}li{padding:6px 0;border-bottom:1px solid var(--faint)}li:last-child{border:0}li span{color:var(--dim);font-size:12.5px}
+.tbl{overflow-x:auto}table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;font-size:14px}th,td{padding:8px 6px;text-align:right;border-bottom:1px solid var(--faint)}th:first-child,td:first-child{text-align:left}th{color:var(--dim);font-size:11.5px}tr:last-child td{border:0}`;
 
 function cors() {
   return { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type" };

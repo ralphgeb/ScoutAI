@@ -186,7 +186,10 @@ async function fetchFeed(feed) {
         source,
         section: normSection(feed.section),
         region: normRegion(feed.region),
-        published: it.isoDate || new Date().toISOString(),
+        // a feed with no date of its own (Nikkei Asia, some Google News items) would otherwise
+        // look like the newest news of all: such items count as a few hours old
+        published: it.isoDate || new Date(Date.now() - 6 * 3600e3).toISOString(),
+        undated: !it.isoDate,
         snippet: trim(it.contentSnippet, 600),
         image: it.image || ''
       };
@@ -475,6 +478,7 @@ const ANALYSIS_TOOL = {
           type: 'object',
           properties: {
             article_index: { type: 'integer' },
+            section: { type: 'string', enum: ['Tech', 'Finance', 'World', 'Fashion'], description: 'The section this story really belongs in, whatever the outlet or feed: Finance only for markets, companies, deals, central banks and the economy; politics, crime, royals and celebrities are World (if kept at all), even from a business outlet.' },
             keep: { type: 'boolean', description: 'true for real news: tech, AI, gadgets, science, companies, finance, markets, economics, significant world/political news, and luxury/high-fashion news (luxury houses and groups, major designers and creative directors, the big fashion weeks, global fashion business). false for local or regional fashion weeks, single store openings, local designers, mass-market retail, sport, celebrity gossip, recipes, horoscopes, shopping deals/coupons and "best buys" edits, podcasts/newsletters with no news, and puzzles.' },
             same_story_as: { type: ['string', 'null'], description: 'If this article covers the SAME specific claim/event as an existing story, that story id (e.g. "a1b2c3d4e5"), or "article:N" for an earlier article in this batch. Otherwise null.' },
             status: { type: 'string', enum: ['rumour', 'confirmed', 'denied', 'news'], description: 'rumour = unconfirmed claim (leaks, "reportedly", "sources say", analyst predictions of company plans, "in talks"), including unconfirmed political or world developments that could move markets (e.g. possible tariffs, sanctions, rate decisions, ceasefires, government interventions). confirmed = an official announcement that confirms a previously rumoured claim. denied = officially denied. news = ordinary confirmed news.' },
@@ -862,7 +866,7 @@ export function mergeBatch(stories, batch, analyses, now = new Date().toISOStrin
       const story = {
         id: idFor(art.link),
         headline: art.title,
-        section: normSection(art.section),
+        section: normSection(['Tech', 'Finance', 'World', 'Fashion'].includes(an.section) ? an.section : art.section),
         image: art.image || '',
         image_checked: true,
         ...clean,

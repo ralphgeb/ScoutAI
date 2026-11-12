@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 // Scout's shared list of followed stocks.
 //
 // When someone adds a stock in the Scout iPhone app, the app tells this service. The morning
@@ -221,15 +222,16 @@ async function runIfDue(env) {
 // recorded the first time someone presses play, in a WaveNet voice close to Aoede (WaveNet has its
 // own free million characters a month), kept for 10 days, and played from the store to everyone
 // after that. A daily cap keeps it inside the free allowance: past it, the phone reads the story.
-const STORY_VOICES = ["en-GB-Wavenet-F", "en-GB-Wavenet-A", "en-GB-Wavenet-C"];   // British, female
+const STORY_VOICES = ["en-GB-Chirp3-HD-Iapetus", "en-GB-Chirp3-HD-Aoede", "en-GB-Wavenet-F"];   // the briefings' voice first
+const GEMINI_STORIES_PER_DAY = 20;   // stories recorded with Gemini Flash each day; after that, Chirp 3: HD
 const STORY_RATE = 1.05;
 const STORY_DAYS = 10;
 const DAILY_STORY_CHARS = 30000;   // about 30 stories a day; 900,000 a month at most, under WaveNet's free million
 
 /** An MP3, whole or the part asked for (Range), with its length, so players show the time. */
-function audioResponse(body, request, maxAge) {
+function audioResponse(body, request, maxAge, ext = "mp3") {
   const total = body.byteLength;
-  const headers = { "Content-Type": "audio/mpeg", "Cache-Control": `max-age=${maxAge}`, "Accept-Ranges": "bytes", ...cors() };
+  const headers = { "Content-Type": ext === "wav" ? "audio/wav" : "audio/mpeg", "Cache-Control": `max-age=${maxAge}`, "Accept-Ranges": "bytes", ...cors() };
   const m = (request.headers.get("Range") || "").match(/^bytes=(\d*)-(\d*)$/);
   if (m && (m[1] || m[2])) {
     let start = m[1] ? Number(m[1]) : Math.max(0, total - Number(m[2]));
@@ -243,44 +245,92 @@ function audioResponse(body, request, maxAge) {
 }
 
 async function storyAudio(id, env, request) {
-  const name = `file:audio-story-${id}.mp3`;
+  // newer app builds ask for ?wav=1: they can play the WAV recordings Gemini makes
+  const wavOK = new URL(request.url).searchParams.get("wav") === "1";
   const cache = caches.default;
-  const key = new Request(`https://files.scout/story-${id}.mp3`);
-  const hit = await cache.match(key);
-  if (hit) return audioResponse(await hit.arrayBuffer(), request, 86400);
-  let body = await env.REQUESTS.get(name, "arrayBuffer");
-  if (!body) {
-    if (!env.GOOGLE_TTS_KEY) return json({ error: "Story audio is off" }, 503);
-    const news = await env.REQUESTS.get("file:news.json", "json");
-    const st = (news?.stories || []).find((x) => x.id === id);
-    if (!st) return json({ error: "No such story" }, 404);
-    const points = (st.key_points || []).map((k) => (typeof k === "string" ? k : k?.text || k?.line || "")).filter(Boolean);
-    const text = [st.headline, st.summary || st.claim || "", ...points].filter(Boolean).join("\n\n").slice(0, 4500);
-    const day = new Date().toISOString().slice(0, 10), month = day.slice(0, 7);
-    const used = Number(await env.REQUESTS.get(`stat:${day}:chars_on_demand`)) || 0;
-    if (used + text.length > DAILY_STORY_CHARS) return json({ error: "Daily limit reached" }, 429);
-    let r;
-    for (const name of STORY_VOICES) {
-      r = await fetch(`https://texttospeech.googleapis.com/v1/text:synthesize?key=${env.GOOGLE_TTS_KEY}`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ input: { text }, voice: { languageCode: "en-GB", name }, audioConfig: { audioEncoding: "MP3", speakingRate: STORY_RATE } }),
-      });
-      if (r.ok || r.status !== 400) break;   // a voice Google doesn't know: try the next
+  for (const ext of wavOK ? ["wav", "mp3"] : ["mp3"]) {
+    const key = new Request(`https://files.scout/story-${id}.${ext}`);
+    const hit = await cache.match(key);
+    if (hit) return audioResponse(await hit.arrayBuffer(), request, 86400, ext);
+    const body = await env.REQUESTS.get(`file:audio-story-${id}.${ext}`, "arrayBuffer");
+    if (body) {
+      await cache.put(key, new Response(body, { headers: { "Cache-Control": "max-age=86400" } }));
+      return audioResponse(body, request, 86400, ext);
     }
-    if (!r.ok) return json({ error: `Google answered ${r.status}` }, 502);
-    const b64 = (await r.json()).audioContent || "";
-    const bin = atob(b64);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    body = bytes.buffer;
-    await env.REQUESTS.put(name, body, { expirationTtl: STORY_DAYS * 86400 });
-    await bump(env, `stat:${day}:chars_on_demand`, text.length, 70 * 86400);
-    await bump(env, `stat:${day}:stories_recorded_on_demand`, 1, 70 * 86400);
-    await bump(env, `stat:${month}:chars_on_demand`, text.length, 400 * 86400);
-    await bump(env, `stat:${month}:stories_recorded_on_demand`, 1, 400 * 86400);
   }
-  await cache.put(key, new Response(body, { headers: { "Content-Type": "audio/mpeg", "Cache-Control": "max-age=86400" } }));
-  return audioResponse(body, request, 86400);
+  // not recorded yet: record it now, keep it, and everyone after gets the saved copy
+  if (!env.GOOGLE_TTS_KEY) return json({ error: "Story audio is off" }, 503);
+  const news = await env.REQUESTS.get("file:news.json", "json");
+  const st = (news?.stories || []).find((x) => x.id === id);
+  if (!st) return json({ error: "No such story" }, 404);
+  const points = (st.key_points || []).map((k) => (typeof k === "string" ? k : k?.text || k?.line || "")).filter(Boolean);
+  const text = [st.headline, st.summary || st.claim || "", ...points].filter(Boolean).join("\n\n").slice(0, 4500);
+  const day = new Date().toISOString().slice(0, 10), month = day.slice(0, 7);
+
+  // the first 20 stories a day with Gemini Flash (Iapetus), as WAV
+  const geminiToday = Number(await env.REQUESTS.get(`stat:${day}:stories_gemini_on_demand`)) || 0;
+  if (wavOK && env.GEMINI_API_KEY && geminiToday < GEMINI_STORIES_PER_DAY) {
+    const wav = await geminiStory(text, env).catch(() => null);
+    if (wav) {
+      await env.REQUESTS.put(`file:audio-story-${id}.wav`, wav, { expirationTtl: STORY_DAYS * 86400 });
+      await bump(env, `stat:${day}:stories_gemini_on_demand`, 1, 70 * 86400);
+      await bump(env, `stat:${day}:chars_gemini_on_demand`, text.length, 70 * 86400);
+      await bump(env, `stat:${month}:chars_gemini_on_demand`, text.length, 400 * 86400);
+      await bump(env, `stat:${month}:stories_recorded_on_demand`, 1, 400 * 86400);
+      await bump(env, `stat:${day}:stories_recorded_on_demand`, 1, 70 * 86400);
+      return audioResponse(wav, request, 86400, "wav");
+    }
+  }
+
+  // then Chirp 3: HD in the same voice, as MP3 (inside its free million, with a daily cap)
+  const used = Number(await env.REQUESTS.get(`stat:${day}:chars_on_demand`)) || 0;
+  if (used + text.length > DAILY_STORY_CHARS) return json({ error: "Daily limit reached" }, 429);
+  let r;
+  for (const name of STORY_VOICES) {
+    r = await fetch(`https://texttospeech.googleapis.com/v1/text:synthesize?key=${env.GOOGLE_TTS_KEY}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ input: { text }, voice: { languageCode: "en-GB", name }, audioConfig: { audioEncoding: "MP3", speakingRate: STORY_RATE } }),
+    });
+    if (r.ok || r.status !== 400) break;   // a voice Google doesn't know: try the next
+  }
+  if (!r.ok) return json({ error: `Google answered ${r.status}` }, 502);
+  const raw = await r.text();
+  const b64 = raw.slice(raw.indexOf('"audioContent"') + 14).match(/"([A-Za-z0-9+/=]+)"/)?.[1] || "";
+  const mp3 = Buffer.from(b64, "base64");
+  const body = mp3.buffer.slice(mp3.byteOffset, mp3.byteOffset + mp3.byteLength);
+  await env.REQUESTS.put(`file:audio-story-${id}.mp3`, body, { expirationTtl: STORY_DAYS * 86400 });
+  await bump(env, `stat:${day}:chars_on_demand`, text.length, 70 * 86400);
+  await bump(env, `stat:${day}:stories_recorded_on_demand`, 1, 70 * 86400);
+  await bump(env, `stat:${month}:chars_on_demand`, text.length, 400 * 86400);
+  await bump(env, `stat:${month}:stories_recorded_on_demand`, 1, 400 * 86400);
+  return audioResponse(body, request, 86400, "mp3");
+}
+
+/** A story read by Gemini Flash (Iapetus) as a WAV file: Gemini sends raw 24 kHz 16-bit sound,
+ *  which only needs a 44-byte header (no converting, so it's quick for the service). */
+async function geminiStory(text, env) {
+  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent`, {
+    method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": env.GEMINI_API_KEY },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: `Say in a warm, lively British newsreader voice: ${text}` }] }],
+      generationConfig: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Iapetus" } } } },
+    }),
+  });
+  if (!r.ok) return null;
+  const raw = await r.text();
+  const at = raw.indexOf('"data"');
+  if (at < 0) return null;
+  const b64 = raw.slice(at + 6).match(/"([A-Za-z0-9+/=]+)"/)?.[1];
+  if (!b64) return null;
+  const pcm = Buffer.from(b64, "base64");
+  const head = Buffer.alloc(44);
+  const rate = 24000, channels = 1, bits = 16;
+  head.write("RIFF", 0); head.writeUInt32LE(36 + pcm.length, 4); head.write("WAVE", 8);
+  head.write("fmt ", 12); head.writeUInt32LE(16, 16); head.writeUInt16LE(1, 20); head.writeUInt16LE(channels, 22);
+  head.writeUInt32LE(rate, 24); head.writeUInt32LE(rate * channels * bits / 8, 28); head.writeUInt16LE(channels * bits / 8, 32);
+  head.writeUInt16LE(bits, 34); head.write("data", 36); head.writeUInt32LE(pcm.length, 40);
+  const wav = Buffer.concat([head, pcm]);
+  return wav.buffer.slice(wav.byteOffset, wav.byteOffset + wav.byteLength);
 }
 
 async function bump(env, key, by, ttl) {
@@ -317,8 +367,8 @@ async function gatherStats(env) {
   const updater = (await env.REQUESTS.get("file:stats-updater.json", "json")) || { months: {}, days: {} };
   const u = updater.months?.[month] || {};
   const get = async (k) => Number(await env.REQUESTS.get(`stat:${month}:${k}`)) || 0;
-  const [demandChars, demandStories, storyPlays, briefingPlays] = await Promise.all(
-    ["chars_on_demand", "stories_recorded_on_demand", "plays_story", "plays_briefing"].map(get));
+  const [demandChars, demandStories, storyPlays, briefingPlays, geminiDemand] = await Promise.all(
+    ["chars_on_demand", "stories_recorded_on_demand", "plays_story", "plays_briefing", "chars_gemini_on_demand"].map(get));
   const plays = await env.REQUESTS.list({ prefix: `play:${month}:` });
   const top = plays.keys.map((k) => ({ kind: k.name.split(":")[2], n: k.metadata?.n || 0, title: k.metadata?.title || k.name.split(":")[3] }))
     .sort((a, b) => b.n - a.n).slice(0, 15);
@@ -327,9 +377,10 @@ async function gatherStats(env) {
     const over = Math.max(0, chars - free);
     return { chars, free, over, costGBP: +(over / 1e6 * pricePerMillion).toFixed(2) };
   };
-  const chirp = allowance((u.chars_briefings || 0) + (u.chars_stories_ahead || 0), PRICES.chirpGBP);
-  const wavenet = allowance(demandChars, PRICES.wavenetGBP);
-  const geminiFlash = { chars: u.chars_gemini_flash || 0 };
+  // stories played on demand: Chirp 3: HD since 12 November (WaveNet before)
+  const chirp = allowance((u.chars_briefings || 0) + (u.chars_stories_ahead || 0) + demandChars, PRICES.chirpGBP);
+  const wavenet = allowance(0, PRICES.wavenetGBP);
+  const geminiFlash = { chars: (u.chars_gemini_flash || 0) + geminiDemand, onDemand: geminiDemand };
   geminiFlash.costUSD = +(geminiFlash.chars / 1e6 * PRICES.geminiFlashUSD).toFixed(2);
   const geminiPro = { chars: u.chars_gemini_pro || 0 };
   geminiPro.costUSD = +(geminiPro.chars / 1e6 * PRICES.geminiProUSD).toFixed(2);

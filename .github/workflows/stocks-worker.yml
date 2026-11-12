@@ -34,6 +34,7 @@ jobs:
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       PRIM_API_KEY: ${{ secrets.PRIM_API_KEY }}
       GOOGLE_TTS_KEY: ${{ secrets.GOOGLE_TTS_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
     steps:
       - name: Checkout
@@ -148,6 +149,11 @@ jobs:
             echo "::notice::Stories read aloud on demand are on."
           else
             echo "::notice::Stories read aloud on demand are off (add GOOGLE_TTS_KEY): only the day's top stories have recordings."
+          fi
+
+          # Stories recorded with Gemini Flash when first played (the first 20 a day).
+          if [ -n "$GEMINI_API_KEY" ]; then
+            printf %s "$GEMINI_API_KEY" | tr -d '[:space:]' | putsecret GEMINI_API_KEY
           fi
 
           # Metro status: New York needs no key, Paris needs PRIM_API_KEY.

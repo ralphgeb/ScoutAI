@@ -422,6 +422,7 @@ export async function addOpenCoverage(articles, label = 'new') {
       if (pic) { a.image = pic; pictures++; }
     }
   });
+  openStats.checked += need.length; openStats.found += found; openStats.pictures += pictures;
   log(`Paywalled outlets (${label}): open coverage found for ${found} of ${need.length} stories (${searched} search results); ${pictures} pictures borrowed.`);
   return found;
 }
@@ -457,6 +458,7 @@ export async function beefUpPaywalled(stories, apiKey) {
       }
     } catch (e) { log(`Rewriting paywalled stories: ${e.message}`); }
   });
+  openStats.rewritten += rewritten;
   log(`Paywalled outlets: ${rewritten} earlier stories rewritten with open coverage.`);
 }
 
@@ -554,6 +556,10 @@ const apiHeaders = (apiKey) => ({ 'content-type': 'application/json', 'x-api-key
 let batchStats = { sent: 0, done: 0, fallback: 0 };
 /** Every request to Claude this run (stories, briefings, pictures, stock summaries), for /stats. */
 let aiCalls = 0;
+/** Tokens read and written by Claude this run (half price through the batch queue), for /stats. */
+let aiTokens = { in: 0, out: 0, batchIn: 0, batchOut: 0 };
+/** Paywalled and hard-to-read stories this run: looked up, open coverage found, pictures borrowed. */
+export const openStats = { checked: 0, found: 0, pictures: 0, rewritten: 0 };
 
 function batchCall(body, apiKey) {
   return new Promise((resolve, reject) => {
@@ -605,7 +611,11 @@ async function flushBatch() {
   items.forEach((it, i) => {
     const r = results.get(`r${i}`);
     const tool = r?.type === 'succeeded' ? (r.message?.content || []).find((c) => c.type === 'tool_use') : null;
-    if (tool?.input) { batchStats.done++; aiCalls++; it.resolve(tool.input); } else retry.push(it);
+    if (tool?.input) {
+      batchStats.done++; aiCalls++;
+      aiTokens.batchIn += r.message?.usage?.input_tokens || 0; aiTokens.batchOut += r.message?.usage?.output_tokens || 0;
+      it.resolve(tool.input);
+    } else retry.push(it);
   });
   if (retry.length) await direct(retry);
 }
@@ -625,6 +635,8 @@ async function callDirect(body, apiKey) {
         body: JSON.stringify(body)
       });
       const json = await res.json();
+      aiTokens.in += (json.usage?.input_tokens || 0) + (json.usage?.cache_read_input_tokens || 0) + (json.usage?.cache_creation_input_tokens || 0);
+      aiTokens.out += json.usage?.output_tokens || 0;
       if (!res.ok) {
         const msg = json?.error?.message || res.statusText;
         if (res.status === 401) throw Object.assign(new Error('Your Anthropic API key was rejected. Check the ANTHROPIC_API_KEY secret on GitHub.'), { fatal: true });
@@ -1558,6 +1570,7 @@ export async function main() {
   }
 
   // company press releases on the FT's markets pages are adverts, not news
+  const runStarted = new Date().toISOString();
   const fresh = (await collect(feeds, seen)).filter((a) => !/markets\.ft\.com\/data\/announce/i.test(a.link || ''));
   const pool = fresh.slice(0, MAX_TRIAGE);
   log(`${fresh.length} new articles found; checking ${pool.length} headlines.`);
@@ -1667,7 +1680,12 @@ export async function main() {
   await writeJSON(SEEN_FILE, [...done, ...seen].slice(0, MAX_SEEN));
   if (USE_BATCH) log(`AI requests at half price: ${batchStats.done}; sent normally: ${batchStats.fallback}.`);
   log(`Done: ${stats.added} new stories, ${stats.merged} merged into existing, ${stats.dropped} skipped as irrelevant. ${news.stories.length} stories total.`);
-  await addStats({ runs: 1, stories_added: stats.added, stories_merged: stats.merged, stories_skipped: stats.dropped, ai_requests: aiCalls })
+  const bySec = {};
+  for (const st of news.stories) if ((st.first_seen || '') >= runStarted) bySec[normSection(st.section)] = (bySec[normSection(st.section)] || 0) + 1;
+  await addStats({ runs: 1, stories_added: stats.added, stories_merged: stats.merged, stories_skipped: stats.dropped, ai_requests: aiCalls,
+    ai_in: aiTokens.in, ai_out: aiTokens.out, ai_batch_in: aiTokens.batchIn, ai_batch_out: aiTokens.batchOut,
+    paywalled_checked: openStats.checked, paywalled_found: openStats.found, paywalled_pictures: openStats.pictures, paywalled_rewritten: openStats.rewritten,
+    ...Object.fromEntries(Object.entries(bySec).map(([k, v]) => [`written_${k.toLowerCase()}`, v])) })
     .catch(() => {});
 }
 

@@ -979,7 +979,9 @@ const DESK_TOOL = {
 const DESK_SYSTEM = `You are the news editor of a news app. You get every story from the last three days (id | section | age | outlets | importance | headline — one-line claim).
 Combine stories into one when a good newspaper would run them as a single article:
 - the same event reported by different outlets, even with different wording or angles (five articles about Samsung's smart glasses launch are one story; two reports of the same shooting are one story);
-- stages of one developing story, where a later report overtakes an earlier one ("board prepares to oust the CEO" and "the CEO resigns" and "shares fall after the CEO resigns" are one story; the lead is the latest stage).
+- stages of one developing story, where a later report overtakes an earlier one ("board prepares to oust the CEO" and "the CEO resigns" and "shares fall after the CEO resigns" are one story; the lead is the latest stage);
+- reactions, analysis, explainers, opinion and background pieces about that same event ("who is the executive at the centre of the scandal", "can the CEO survive", "investors worry after the resignation", "senator calls for him to go"): they belong in the main story, not beside it.
+Keep apart only pieces that are news in their own right with a different event at their core (another company's IPO, a separate investigation, a separate policy decision), even when they mention the same company.
 Do NOT combine stories that only share a topic or a company but are separate news (two different Nvidia deals, two different shootings, a product review and a lawsuit).
 Then check the importance scores: a story overtaken by events (its headline is no longer true or no longer the news) gets 2 or less; judge the rest against today's news like a front-page editor.
 Go through the whole list carefully. Call record_desk once.`;
@@ -1011,7 +1013,7 @@ const MERGE_TOOL = {
 };
 
 export const deskStats = { groups: 0, merged: 0, rescored: 0 };
-const DESK_SAME_SYSTEM = 'You are a strict news editor. For each pair, say same=true only if the candidate reports the SAME specific event as the headline, or an earlier or later stage of that same developing story (e.g. "board prepares to oust CEO" and "CEO resigns", or "shares fall after CEO resigns"). Different news that merely involves the same company, person, industry or theme is NOT the same (e.g. a CEO resignation and a different company\'s IPO, or an AI stock sell-off and an unrelated AI start-up). Call record_same once.';
+const DESK_SAME_SYSTEM = 'You are a news editor. For each pair, say same=true if the candidate is about the SAME event as the headline: the same report from another outlet, an earlier or later stage of that developing story (e.g. "board prepares to oust CEO" and "CEO resigns", or "shares fall after CEO resigns"), or a reaction, analysis, explainer or opinion piece about that event. Different news that merely involves the same company, person, industry or theme is NOT the same (e.g. a CEO resignation and a different company\'s IPO, or an AI stock sell-off and an unrelated AI start-up). Call record_same once.';
 /** Old story ids mapped to the story they were combined into. */
 export function aliasMap(stories) {
   const m = new Map();
@@ -1039,6 +1041,41 @@ export function remapBriefing(briefing, stories) {
   for (const e of briefing.editions || []) fixEdition(e);
   return n;
 }
+/** Each section briefing leads with a story from its own section and gets its own picture: the lead
+ *  story's, or another outlet's photo of the same story if a section above already uses that one,
+ *  or a picture from the section's own stories. The main briefing gets the top story's picture. */
+export function sectionCovers(briefing, stories) {
+  const byId = new Map(stories.map((s) => [s.id, s]));
+  const used = new Set();
+  const good = (u) => u && !BAD_IMAGE.test(u) && !used.has(u);
+  const words = (t) => new Set(String(t || '').toLowerCase().match(/[a-z0-9]{4,}/g) || []);
+  const top = briefing.editions?.[0];
+  if (top) {
+    const lead = byId.get(top.top_stories?.[0]?.story_id);
+    const pic = [lead?.image, ...(lead?.sources || []).map((x) => x.image)].find(good);
+    if (pic) { top.image = pic; used.add(pic); }
+  }
+  for (const sec of ['Tech', 'Finance', 'World', 'Fashion']) {
+    const b = briefing.sections?.[sec];
+    if (!b) continue;
+    let lead = byId.get(b.lead_story_id);
+    const tw0 = words(b.title);
+    if (lead && normSection(lead.section) !== sec && ![...words(lead.headline)].some((w) => tw0.has(w))) {
+      // a story from this section that matches the briefing's headline best
+      const tw = words(b.title);
+      const own = stories.filter((s) => normSection(s.section) === sec);
+      const pointIds = new Set((b.points || []).map((p) => p.story_id));
+      const best = own.map((s) => ({ s, n: [...words(s.headline)].filter((w) => tw.has(w)).length + (pointIds.has(s.id) ? 0.5 : 0) }))
+        .sort((x, y) => y.n - x.n || (y.s.importance || 0) - (x.s.importance || 0))[0];
+      if (best && best.n >= 1) { b.lead_story_id = best.s.id; lead = best.s; }
+    }
+    const pics = [lead?.image, ...(lead?.sources || []).map((x) => x.image),
+      ...(b.points || []).map((p) => byId.get(p.story_id)).filter((s) => s && normSection(s.section) === sec).flatMap((s) => [s.image, ...(s.sources || []).map((x) => x.image)])];
+    const pic = pics.find(good);
+    if (pic) { b.image = pic; used.add(pic); } else delete b.image;
+  }
+}
+
 /** A briefing's lead story always has a picture: its own, or one from its outlets. */
 export function leadPictures(briefing, stories) {
   const byId = new Map(stories.map((s) => [s.id, s]));
@@ -1108,7 +1145,7 @@ export function deskCandidates(pool) {
 
 export async function editorsDesk(stories, apiKey) {
   // two passes: the second sees the combined stories and catches what the first missed
-  for (let pass = 1; pass <= 2; pass++) {
+  for (let pass = 1; pass <= 3; pass++) {
     const n = await deskPass(stories, apiKey, pass);
     if (!n) break;
   }
@@ -1917,6 +1954,7 @@ export async function main() {
     await editorsDesk(news.stories, apiKey);
     const remapped = remapBriefing(briefing, news.stories);
     const pics = leadPictures(briefing, news.stories);
+    sectionCovers(briefing, news.stories);
     log(`Briefings: ${remapped} links moved to combined stories, ${pics} lead pictures added.`);
     news.updated = new Date().toISOString();
     await writeJSON(NEWS_FILE, news);
@@ -2048,6 +2086,7 @@ export async function main() {
   try { await beefUpPaywalled(news.stories, apiKey); } catch (e) { log(`Paywalled refresh failed: ${e.message}`); }
   remapBriefing(briefing, news.stories);
   leadPictures(briefing, news.stories);
+  sectionCovers(briefing, news.stories);
   briefing.updated = new Date().toISOString();
 
   await doStocks('all');

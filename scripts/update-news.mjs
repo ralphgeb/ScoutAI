@@ -410,13 +410,13 @@ const SAME_TOOL = {
 };
 
 /** Asks the AI which near matches are really the same story (one cheap request for many). */
-async function confirmSame(pairs, apiKey) {
+async function confirmSame(pairs, apiKey, system = 'You check whether two news headlines report the same specific event. Be strict: same topic is not enough. Call record_same once.') {
   const ok = new Set();
   for (const part of chunk(pairs, 40)) {
     try {
       const input = await callDirect({
         model: MODEL, max_tokens: 2000,
-        system: 'You check whether two news headlines report the same specific event. Be strict: same topic is not enough. Call record_same once.',
+        system,
         tools: [SAME_TOOL], tool_choice: { type: 'tool', name: 'record_same' },
         messages: [{ role: 'user', content: part.map((p) => `${p.id}\nHeadline: ${p.headline}\nCandidate (${p.outlet}): ${p.candidate}`).join('\n\n') }],
       }, apiKey);
@@ -1011,6 +1011,47 @@ const MERGE_TOOL = {
 };
 
 export const deskStats = { groups: 0, merged: 0, rescored: 0 };
+const DESK_SAME_SYSTEM = 'You are a strict news editor. For each pair, say same=true only if the candidate reports the SAME specific event as the headline, or an earlier or later stage of that same developing story (e.g. "board prepares to oust CEO" and "CEO resigns", or "shares fall after CEO resigns"). Different news that merely involves the same company, person, industry or theme is NOT the same (e.g. a CEO resignation and a different company\'s IPO, or an AI stock sell-off and an unrelated AI start-up). Call record_same once.';
+/** Old story ids mapped to the story they were combined into. */
+export function aliasMap(stories) {
+  const m = new Map();
+  for (const s of stories) for (const id of s.merged_ids || []) m.set(id, s.id);
+  return m;
+}
+/** Points the briefings at the combined stories when a story they named was folded into another. */
+export function remapBriefing(briefing, stories) {
+  const alias = aliasMap(stories);
+  if (!alias.size || !briefing) return 0;
+  let n = 0;
+  const fix = (o, k) => { if (o && alias.has(o[k])) { o[k] = alias.get(o[k]); n++; } };
+  const fixBrief = (b) => {
+    if (!b) return;
+    fix(b, 'lead_story_id');
+    for (const p of b.points || []) fix(p, 'story_id');
+    for (const h of b.highlights || []) fix(h, 'story_id');
+  };
+  const fixEdition = (e) => {
+    if (!e) return;
+    for (const k of ['top_stories', 'rumour_watch', 'in_brief']) for (const x of e[k] || []) fix(x, 'story_id');
+  };
+  for (const b of Object.values(briefing.sections || {})) fixBrief(b);
+  for (const ed of Object.values(briefing.section_editions || {})) for (const b of Object.values(ed || {})) fixBrief(b);
+  for (const e of briefing.editions || []) fixEdition(e);
+  return n;
+}
+/** A briefing's lead story always has a picture: its own, or one from its outlets. */
+export function leadPictures(briefing, stories) {
+  const byId = new Map(stories.map((s) => [s.id, s]));
+  const ids = [...Object.values(briefing.sections || {}).map((b) => b?.lead_story_id), ...(briefing.editions?.[0]?.top_stories || []).map((t) => t.story_id)];
+  let n = 0;
+  for (const id of ids) {
+    const s = byId.get(id);
+    if (!s || s.image) continue;
+    const pic = (s.sources || []).map((x) => x.image).find((u) => u && !BAD_IMAGE.test(u));
+    if (pic) { s.image = pic; n++; }
+  }
+  return n;
+}
 
 /** Combines a group into its lead story (sources, stocks, topics, pictures) and returns the members removed. */
 export function combineGroup(stories, ids, leadId) {
@@ -1031,6 +1072,7 @@ export function combineGroup(stories, ids, leadId) {
     // the story is as fresh as its latest development
     if ((o.first_published || '') > (lead.first_published || '')) lead.first_published = o.first_published;
   }
+  if (!lead.image) lead.image = (lead.sources || []).map((x) => x.image).find((u) => u && !BAD_IMAGE.test(u)) || '';
   lead.merged_ids = [...new Set([...(lead.merged_ids || []), ...others.map((o) => o.id), ...others.flatMap((o) => o.merged_ids || [])])];
   lead.last_updated = new Date().toISOString();
   return { lead, members, others };
@@ -1075,6 +1117,24 @@ async function deskPass(stories, apiKey, pass) {
     ids.forEach((id) => taken.add(id));
     proposed.push({ ids, lead: g.lead, headline: trim(g.headline, 120), importance: g.importance });
   }
+
+  // every piece is checked against the lead: same event or a stage of the same developing story, or it stays apart
+  const pairs = [];
+  proposed.forEach((g, gi) => g.ids.forEach((id) => {
+    if (id === g.lead) return;
+    const a = byId0.get(g.lead), b = byId0.get(id);
+    pairs.push({ id: `${gi}:${id}`, headline: `${a.headline} — ${a.claim || ''}`, candidate: `${b.headline} — ${b.claim || ''}`, outlet: b.section });
+  }));
+  const ok = pairs.length ? await confirmSame(pairs, apiKey, DESK_SAME_SYSTEM) : new Set();
+  let rejected = 0;
+  proposed.forEach((g, gi) => {
+    const keep = g.ids.filter((id) => id === g.lead || ok.has(`${gi}:${id}`));
+    rejected += g.ids.length - keep.length;
+    // a very big group is suspicious: keep the lead and the pieces with the most outlets
+    g.ids = keep.length > 15 ? [g.lead, ...keep.filter((id) => id !== g.lead).sort((x, y) => (byId0.get(y).sources?.length || 0) - (byId0.get(x).sources?.length || 0)).slice(0, 14)] : keep;
+  });
+  for (let k = proposed.length - 1; k >= 0; k--) if (proposed[k].ids.length < 2) proposed.splice(k, 1);
+  if (rejected) log(`Editor's desk: ${rejected} pieces kept apart after the same-story check.`);
 
   // a journalist writes each group as one story, and leaves out any part that isn't the same story
   const written = new Map();
@@ -1807,9 +1867,13 @@ export async function main() {
   if (MODE === 'desk') {   // the editor's pass on the stories we have: combine duplicates, re-rank, publish
     const news = await readJSON(NEWS_FILE, { stories: [] });
     await editorsDesk(news.stories, apiKey);
+    const remapped = remapBriefing(briefing, news.stories);
+    const pics = leadPictures(briefing, news.stories);
+    log(`Briefings: ${remapped} links moved to combined stories, ${pics} lead pictures added.`);
     news.updated = new Date().toISOString();
     await writeJSON(NEWS_FILE, news);
-    log(await publishFile('news.json', news) ? 'Edited stories published.' : 'Edited stories not published.');
+    await writeJSON(BRIEFING_FILE, briefing);
+    log(await publishFile('news.json', news) && await publishFile('briefing.json', briefing) ? 'Edited stories published.' : 'Edited stories not published.');
     return;
   }
   if (MODE === 'gemini-samples') { await makeGeminiSamples(briefing, log); return; }   // Gemini voices to compare (/voices)   // Chirp 3: HD voices to compare (/voices)
@@ -1934,6 +1998,8 @@ export async function main() {
     log(`Section summaries failed: ${e.message}`);
   }
   try { await beefUpPaywalled(news.stories, apiKey); } catch (e) { log(`Paywalled refresh failed: ${e.message}`); }
+  remapBriefing(briefing, news.stories);
+  leadPictures(briefing, news.stories);
   briefing.updated = new Date().toISOString();
 
   await doStocks('all');

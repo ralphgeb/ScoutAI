@@ -1036,19 +1036,27 @@ export function combineGroup(stories, ids, leadId) {
 }
 
 export async function editorsDesk(stories, apiKey) {
+  // two passes: the second sees the combined stories and catches what the first missed
+  for (let pass = 1; pass <= 2; pass++) {
+    const n = await deskPass(stories, apiKey, pass);
+    if (!n) break;
+  }
+}
+
+async function deskPass(stories, apiKey, pass) {
   const since = Date.now() - KEEP_DAYS * 86400e3;
   const pool = stories.filter((s) => Date.parse(s.first_published || s.first_seen || 0) > since || Date.parse(s.first_seen || 0) > since);
-  if (pool.length < 2) return;
+  if (pool.length < 2) return 0;
   const hours = (s) => Math.max(0, Math.round((Date.now() - Date.parse(s.first_published || s.first_seen)) / 3600e3));
-  // in parts of up to 300 stories, each section's stories together so related stories share a part
-  const sorted = [...pool].sort((a, b) => (a.section || '').localeCompare(b.section || '') || (a.headline || '').localeCompare(b.headline || ''));
-  const parts = chunk(sorted, 300);
+  // all stories in one list (every section: one story can be filed under Tech and World)
+  const sorted = [...pool].sort((a, b) => (a.headline || '').localeCompare(b.headline || ''));
+  const parts = chunk(sorted, 800);
   const plan = [];
   await runParallel(parts, 2, async (part) => {
     const list = part.map((s) => `${s.id} | ${s.section} | ${hours(s)}h | ${s.sources?.length || 1} | ${s.importance ?? '?'} | ${(s.headline || s.claim || '').slice(0, 140)} — ${(s.claim || '').slice(0, 140)}`).join('\n');
     try {
       const input = await callDirect({
-        model: BRIEFING_MODEL, max_tokens: 12000, system: DESK_SYSTEM,
+        model: BRIEFING_MODEL, max_tokens: 16000, system: DESK_SYSTEM,
         tools: [DESK_TOOL], tool_choice: { type: 'tool', name: 'record_desk' },
         messages: [{ role: 'user', content: `Stories:\n${list}` }],
       }, apiKey);
@@ -1110,7 +1118,8 @@ export async function editorsDesk(stories, apiKey) {
     } catch (e) { if (e.fatal) throw e; log(`Combined story rewrite: ${e.message}`); }
   });
   deskStats.groups += combined.length; deskStats.merged += before - stories.length;
-  log(`Editor's desk: ${combined.length} stories combined from ${combined.length + before - stories.length} (${before - stories.length} folded in), ${deskStats.rescored} importance scores changed.`);
+  log(`Editor's desk (pass ${pass}): ${combined.length} stories combined from ${combined.length + before - stories.length} (${before - stories.length} folded in), ${deskStats.rescored} importance scores changed.`);
+  return combined.length;
 }
 
 // ---------- 5. Daily briefing ----------

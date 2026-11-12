@@ -27,8 +27,8 @@ const offsetMin = Math.round((Date.UTC(+parts.year, +parts.month - 1, +parts.day
 const londonToday = (m) => Date.UTC(+parts.year, +parts.month - 1, +parts.day, 0, m) - offsetMin * 60e3;
 
 // London time, so it follows the clock change; the afternoon one writes the Evening edition
-// The afternoon run (Evening briefings at 16:30 London); set EVENING to false to turn it off.
-const EVENING = true;
+// The afternoon run (Evening briefings at 16:30 London) is off for now; set EVENING to true to bring it back.
+const EVENING = false;
 const SLOTS = [{ name: 'morning', at: 5 * 60, catchUp: 8 * 60 }, ...(EVENING ? [{ name: 'afternoon', at: 16 * 60 + 30, catchUp: 5 * 60 }] : [])];
 
 const lastNews = time(read('news.json').updated);

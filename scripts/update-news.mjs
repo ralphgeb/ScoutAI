@@ -942,6 +942,177 @@ export function mergeBatch(stories, batch, analyses, now = new Date().toISOStrin
   return { added, merged, dropped, handled: new Set(sorted.map((a) => a.article_index)), storyOf: batchStory };
 }
 
+// ---------- 4b. The editor's desk ----------
+// Looks at all recent stories together, like a news editor: stories about the same event, or
+// stages of one developing story ("board prepares to oust CEO" → "CEO resigns"), become one story
+// rewritten with everything known, overtaken versions go, and importance is judged against the day.
+const DESK_TOOL = {
+  name: 'record_desk',
+  description: 'Record which stories to combine and which importance scores to change.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      groups: {
+        type: 'array',
+        description: 'Sets of stories a good newspaper would run as ONE article. Include every set you find; go through the whole list.',
+        items: {
+          type: 'object',
+          properties: {
+            ids: { type: 'array', items: { type: 'string' }, description: 'All story ids in the set (2 or more).' },
+            lead: { type: 'string', description: 'The id that reflects the latest state of events (e.g. the resignation, not the earlier "prepares to oust").' },
+            headline: { type: 'string', description: 'A new headline for the combined story stating the LATEST facts, in your own words, max 90 chars.' },
+            importance: { type: 'integer', description: '1-10 for the combined story.' },
+          },
+          required: ['ids', 'lead', 'headline', 'importance'],
+        },
+      },
+      rescore: {
+        type: 'array',
+        description: 'Stories (not in a group) whose importance score is clearly wrong for today: overtaken by events, overrated or underrated. Only those that should move by 2 or more.',
+        items: { type: 'object', properties: { id: { type: 'string' }, importance: { type: 'integer' } }, required: ['id', 'importance'] },
+      },
+    },
+    required: ['groups', 'rescore'],
+  },
+};
+
+const DESK_SYSTEM = `You are the news editor of a news app. You get every story from the last three days (id | section | age | outlets | importance | headline — one-line claim).
+Combine stories into one when a good newspaper would run them as a single article:
+- the same event reported by different outlets, even with different wording or angles (five articles about Samsung's smart glasses launch are one story; two reports of the same shooting are one story);
+- stages of one developing story, where a later report overtakes an earlier one ("board prepares to oust the CEO" and "the CEO resigns" and "shares fall after the CEO resigns" are one story; the lead is the latest stage).
+Do NOT combine stories that only share a topic or a company but are separate news (two different Nvidia deals, two different shootings, a product review and a lawsuit).
+Then check the importance scores: a story overtaken by events (its headline is no longer true or no longer the news) gets 2 or less; judge the rest against today's news like a front-page editor.
+Go through the whole list carefully. Call record_desk once.`;
+
+const MERGE_TOOL = {
+  name: 'record_stories',
+  description: 'Record the rewritten combined stories.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      stories: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            claim: { type: 'string', description: 'One neutral sentence with the latest core news, max 140 chars.' },
+            summary: { type: 'string', description: 'One coherent story of 5-7 sentences (about 110-170 words) written like a journalist, not an aggregator: lead with the latest and most important fact, then how events unfolded, the concrete details and numbers from all the reports, and why it matters. Never mention "reports" or "articles"; never contradict yourself with overtaken facts (describe them as earlier steps).' },
+            key_points: { type: 'array', items: { type: 'string' }, description: '4-6 full-sentence key facts, latest first. Never invent facts.' },
+            status: { type: 'string', enum: ['rumour', 'confirmed', 'denied', 'news'], description: 'The status of the latest state of the story.' },
+          },
+          required: ['id', 'claim', 'summary', 'key_points', 'status'],
+        },
+      },
+    },
+    required: ['stories'],
+  },
+};
+
+export const deskStats = { groups: 0, merged: 0, rescored: 0 };
+
+/** Combines a group into its lead story (sources, stocks, topics, pictures) and returns the members removed. */
+export function combineGroup(stories, ids, leadId) {
+  const byId = new Map(stories.map((s) => [s.id, s]));
+  const members = [...new Set(ids)].map((id) => byId.get(id)).filter(Boolean);
+  const lead = byId.get(leadId) || members[0];
+  if (!lead || members.length < 2) return null;
+  const others = members.filter((m) => m !== lead);
+  for (const o of others) {
+    for (const src of o.sources || []) if (!lead.sources.some((x) => x.link === src.link)) lead.sources.push(src);
+    const tickers = new Set((lead.stocks || []).map((x) => x.ticker));
+    for (const st of o.stocks || []) if (!tickers.has(st.ticker) && lead.stocks.length < 6) { lead.stocks.push(st); tickers.add(st.ticker); }
+    lead.topics = [...new Set([...(lead.topics || []), ...(o.topics || [])])].filter((t) => t !== 'Other' || lead.topics.length === 1);
+    if (IMPACT_RANK[o.overall_impact] > IMPACT_RANK[lead.overall_impact]) lead.overall_impact = o.overall_impact;
+    if (!lead.image && o.image) lead.image = o.image;
+    if (!lead.market_take && o.market_take) lead.market_take = o.market_take;
+    if ((o.first_seen || '') && o.first_seen < (lead.first_seen || '9')) lead.first_seen = o.first_seen;
+    // the story is as fresh as its latest development
+    if ((o.first_published || '') > (lead.first_published || '')) lead.first_published = o.first_published;
+  }
+  lead.merged_ids = [...new Set([...(lead.merged_ids || []), ...others.map((o) => o.id), ...others.flatMap((o) => o.merged_ids || [])])];
+  lead.last_updated = new Date().toISOString();
+  return { lead, members, others };
+}
+
+export async function editorsDesk(stories, apiKey) {
+  const since = Date.now() - KEEP_DAYS * 86400e3;
+  const pool = stories.filter((s) => Date.parse(s.first_published || s.first_seen || 0) > since || Date.parse(s.first_seen || 0) > since);
+  if (pool.length < 2) return;
+  const hours = (s) => Math.max(0, Math.round((Date.now() - Date.parse(s.first_published || s.first_seen)) / 3600e3));
+  // in parts of up to 300 stories, each section's stories together so related stories share a part
+  const sorted = [...pool].sort((a, b) => (a.section || '').localeCompare(b.section || '') || (a.headline || '').localeCompare(b.headline || ''));
+  const parts = chunk(sorted, 300);
+  const plan = [];
+  await runParallel(parts, 2, async (part) => {
+    const list = part.map((s) => `${s.id} | ${s.section} | ${hours(s)}h | ${s.sources?.length || 1} | ${s.importance ?? '?'} | ${(s.headline || s.claim || '').slice(0, 140)} — ${(s.claim || '').slice(0, 140)}`).join('\n');
+    try {
+      const input = await callDirect({
+        model: BRIEFING_MODEL, max_tokens: 12000, system: DESK_SYSTEM,
+        tools: [DESK_TOOL], tool_choice: { type: 'tool', name: 'record_desk' },
+        messages: [{ role: 'user', content: `Stories:\n${list}` }],
+      }, apiKey);
+      plan.push(input);
+    } catch (e) { if (e.fatal) throw e; log(`Editor's desk: ${e.message}`); }
+  });
+
+  // combine the groups (a story only joins one group)
+  const used = new Set();
+  const combined = [];
+  const removed = new Set();
+  for (const p of plan) for (const g of p.groups || []) {
+    const ids = (g.ids || []).filter((id) => !used.has(id) && !removed.has(id));
+    if (!ids.includes(g.lead)) ids.unshift(g.lead);
+    const res = combineGroup(stories, ids, g.lead);
+    if (!res) continue;
+    res.members.forEach((m) => used.add(m.id));
+    res.others.forEach((o) => removed.add(o.id));
+    res.lead.headline = trim(g.headline, 120) || res.lead.headline;
+    res.lead.importance = Math.max(1, Math.min(10, Math.round(Number(g.importance) || res.lead.importance || 5)));
+    combined.push({ lead: res.lead, members: res.members });
+  }
+  const before = stories.length;
+  for (let k = stories.length - 1; k >= 0; k--) if (removed.has(stories[k].id)) stories.splice(k, 1);
+
+  // importance changes
+  const byId = new Map(stories.map((s) => [s.id, s]));
+  for (const p of plan) for (const r of p.rescore || []) {
+    const s = byId.get(r.id);
+    if (!s || used.has(r.id)) continue;
+    const v = Math.max(1, Math.min(10, Math.round(Number(r.importance))));
+    if (v && v !== s.importance) { s.importance = v; deskStats.rescored++; }
+  }
+
+  // each combined story rewritten as one piece, from everything the parts said
+  await runParallel(chunk(combined, 6), PARALLEL, async (batch) => {
+    const text = batch.map(({ lead, members }) => `Story ${lead.id} — new headline: ${lead.headline}\n` + members
+      .sort((a, b) => (a.first_published || a.first_seen || '').localeCompare(b.first_published || b.first_seen || ''))
+      .map((m) => `• ${m.first_published || m.first_seen || ''} | ${m.headline}\n  ${m.summary || m.claim || ''}\n  ${(m.key_points || []).map((k) => (typeof k === 'string' ? k : k?.text || '')).join(' ')}`).join('\n')).join('\n\n');
+    try {
+      const input = await callClaude({
+        model: MODEL, max_tokens: 6000,
+        system: 'You are a news journalist. Each story below was reported in several pieces (oldest first). Write each as ONE coherent story with the latest facts first. Call record_stories once.',
+        tools: [MERGE_TOOL], tool_choice: { type: 'tool', name: 'record_stories' },
+        messages: [{ role: 'user', content: text }],
+      }, apiKey);
+      for (const r of input.stories || []) {
+        const s = byId.get(r.id);
+        if (!s) continue;
+        if (r.summary) s.summary = trim(r.summary, 1400);
+        if (r.claim) s.claim = trim(r.claim, 200);
+        const kp = (r.key_points || []).map((p) => trim(p, 300)).filter(Boolean).slice(0, 6);
+        if (kp.length) s.key_points = kp;
+        if (['rumour', 'confirmed', 'denied', 'news'].includes(r.status)) {
+          if (s.status === 'rumour' && r.status !== 'rumour') { s.resolved_at = new Date().toISOString(); if (r.status === 'confirmed') s.likelihood = 100; else if (r.status === 'news') s.likelihood = null; }
+          s.status = r.status;
+        }
+      }
+    } catch (e) { if (e.fatal) throw e; log(`Combined story rewrite: ${e.message}`); }
+  });
+  deskStats.groups += combined.length; deskStats.merged += before - stories.length;
+  log(`Editor's desk: ${combined.length} stories combined from ${combined.length + before - stories.length} (${before - stories.length} folded in), ${deskStats.rescored} importance scores changed.`);
+}
+
 // ---------- 5. Daily briefing ----------
 const BRIEFING_TOOL = {
   name: 'record_briefing',
@@ -1609,6 +1780,14 @@ export async function main() {
   if (MODE === 'notify') { await sendMorning(DATA_DIR, pushKeys, briefing, log); return; }
   if (MODE === 'audio') { await makeAudio(briefing, log, await readJSON(NEWS_FILE, { stories: [] })); return; }   // the spoken briefings only
   if (MODE === 'samples') { await makeSamples(briefing, log); return; }
+  if (MODE === 'desk') {   // the editor's pass on the stories we have: combine duplicates, re-rank, publish
+    const news = await readJSON(NEWS_FILE, { stories: [] });
+    await editorsDesk(news.stories, apiKey);
+    news.updated = new Date().toISOString();
+    await writeJSON(NEWS_FILE, news);
+    log(await publishFile('news.json', news) ? 'Edited stories published.' : 'Edited stories not published.');
+    return;
+  }
   if (MODE === 'gemini-samples') { await makeGeminiSamples(briefing, log); return; }   // Gemini voices to compare (/voices)   // Chirp 3: HD voices to compare (/voices)
 
   // The worldwide stock list for the app's search box: built when missing, then once a week.
@@ -1692,6 +1871,10 @@ export async function main() {
     // fashion stories saved before the Fashion section existed
     if (s.section === 'Tech' && FASHION_OUTLETS.test(s.sources?.[0]?.name || '')) s.section = 'Fashion';
   }
+  try { await editorsDesk(news.stories, apiKey); } catch (e) {
+    if (e.fatal) { console.error('\n❌ ' + e.message + '\n'); process.exit(1); }
+    log(`Editor's desk failed: ${e.message}`);
+  }
   try { await upgradeOld(news.stories, apiKey); } catch (e) {
     if (e.fatal) { console.error('\n❌ ' + e.message + '\n'); process.exit(1); }
     log(`Upgrading older stories failed: ${e.message}`);
@@ -1747,6 +1930,7 @@ export async function main() {
     ai_in: aiTokens.in, ai_out: aiTokens.out, ai_batch_in: aiTokens.batchIn, ai_batch_out: aiTokens.batchOut,
     paywalled_checked: openStats.checked, paywalled_found: openStats.found, paywalled_pictures: openStats.pictures, paywalled_rewritten: openStats.rewritten,
     paywalled_ai: openStats.viaAI, paywalled_rechecked: openStats.earlierChecked,
+    stories_combined: deskStats.merged, desk_groups: deskStats.groups, desk_rescored: deskStats.rescored,
     ...Object.fromEntries(Object.entries(bySec).map(([k, v]) => [`written_${k.toLowerCase()}`, v])) })
     .catch(() => {});
   const aiCostUSD = +(((aiTokens.in * 0.10 + aiTokens.out * 0.50) + (aiTokens.batchIn * 0.10 + aiTokens.batchOut * 0.50) / 2) / 1e6).toFixed(4);
@@ -1757,6 +1941,7 @@ export async function main() {
       rechecked: openStats.earlierChecked, rewritten: openStats.rewritten },
     ai: { requests: aiCalls, tokensIn: aiTokens.in + aiTokens.batchIn, tokensOut: aiTokens.out + aiTokens.batchOut, costUSD: aiCostUSD, model: MODEL },
     voices: audioUsage.byVoice, voiceCostUSD: audioUsage.costUSD,
+    desk: { ...deskStats },
   }).catch(() => {});
 }
 

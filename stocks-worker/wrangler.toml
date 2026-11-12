@@ -3,6 +3,8 @@
 name = "scout-stocks"
 main = "worker.js"
 compatibility_date = "2025-01-01"
+# Buffer, for turning recordings from base64 into bytes quickly
+compatibility_flags = ["nodejs_compat"]
 
 # Starts the quick stocks update for stocks added while the last one was too recent.
 [triggers]

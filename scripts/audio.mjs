@@ -12,7 +12,7 @@ import { publishFile, publishBinary, readFile, addStats } from './publish.mjs';
 const API = 'https://texttospeech.googleapis.com/v1';
 const LANG = 'en-GB';
 export const VOICES = {
-  chirp: { label: 'Chirp 3: HD', pattern: /^en-GB-Chirp3-HD-Aoede$/, fallback: /^en-GB-Chirp3-HD-/ },
+  chirp: { label: 'Chirp 3: HD', pattern: /^en-GB-Chirp3-HD-Iapetus$/, fallback: /^en-GB-Chirp3-HD-/ },   // the same voice as the Gemini briefings
 };
 /** A touch quicker than normal, so the briefing sounds more alive. */
 const RATE = 1.05;
@@ -76,7 +76,9 @@ export function script(sec, brief) {
   const lead = String(brief.summary || '').split(/\n\s*\n/)[0]?.trim() || '';
   const items = (brief.highlights?.length ? brief.highlights.map((h) => (h.label ? `${h.label}. ${h.text}` : h.text))
     : (brief.points || []).map((p) => p.text || p.line)).filter(Boolean);
-  return [brief.title, lead, ...items].filter(Boolean).join('\n\n').slice(0, 4500);
+  // a short pause after the main summary, then the highlights
+  const turn = items.length ? ['[pause long] Other noteworthy highlights. [pause]'] : [];
+  return [brief.title, lead, ...turn, ...items].filter(Boolean).join('\n\n').slice(0, 4500);
 }
 
 async function pickVoice(key, want) {
@@ -95,7 +97,7 @@ let elevenChars = 0;   // characters sent to ElevenLabs this run
 //   ELEVENLABS_API_KEY  (secret)  the key from elevenlabs.io › Developers › API keys
 //   ELEVENLABS_VOICE_ID (optional) a voice from the Voice Library; default Alice (British, clear)
 //   ELEVENLABS_MODEL    (optional) default eleven_multilingual_v2, the most natural
-const ELEVEN_SECTIONS = ['Tech', 'World'];
+const ELEVEN_SECTIONS = [];   // ElevenLabs off: every briefing is Gemini Flash now
 const ELEVEN_VOICE = 'Xb7hH8MSUJpSbSDYk0k2';   // Alice
 const ELEVEN_MODEL = 'eleven_flash_v2_5';   // Flash for every ElevenLabs recording
 /** Per briefing, to compare: World on Flash v2.5 (half the credits), Tech on Multilingual v2. */
@@ -105,8 +107,8 @@ const ELEVEN_MODELS = {};
 // Gemini API with a Google AI Studio key (GEMINI_API_KEY). Told how to read, in the same Aoede voice
 // as Chirp, so the two can be compared. Gemini sends raw sound, which ffmpeg (on GitHub's runners)
 // turns into MP3. If Gemini fails, that briefing is recorded with Chirp 3: HD instead.
-const GEMINI = { Finance: 'gemini-2.5-flash-preview-tts', Fashion: 'gemini-2.5-flash-preview-tts' };   // Flash for both
-const GEMINI_VOICE = 'Callirrhoe';   // easy-going; picked from the /voices samples
+const GEMINI = { Tech: 'gemini-2.5-flash-preview-tts', Finance: 'gemini-2.5-flash-preview-tts', World: 'gemini-2.5-flash-preview-tts', Fashion: 'gemini-2.5-flash-preview-tts' };   // Flash for all four
+const GEMINI_VOICE = 'Iapetus';   // clear; tried from the evening of 12 November
 const GEMINI_PROMPT = 'Say in a warm, lively British newsreader voice:';
 let geminiChars = { flash: 0, pro: 0 };
 
@@ -211,7 +213,7 @@ async function speakEleven(text, sec = '') {
 
 /** How many stories are recorded ahead each run (in Chirp 3: HD), and how long a story's recording
  *  is kept. Any other story is recorded in WaveNet by the Scout service the first time it's played. */
-const TOP_STORIES = 10;
+const TOP_STORIES = 0;   // none recorded ahead: a story is recorded the first time someone plays it, then kept
 const STORY_DAYS = 10;
 
 /** What a story's recording reads: the headline, Scout's summary and its key points. */
@@ -222,14 +224,14 @@ export function storyScript(st) {
 
 /** Short lines the app plays while a story nobody has played yet is being recorded. */
 // Two short sentences with a pause between them (Chirp 3: HD's [pause long] markup).
+// One short sentence while a story nobody has played yet is being recorded.
 const HOLD = [
-  'Okay, getting this story for you now. [pause long] A few more seconds and it\'ll be ready.',
-  'One moment, I\'m putting this one together. [pause long] Nearly there.',
-  'Right, fetching this story for you. [pause long] Just a couple more seconds.',
-  'Hold on, I\'m getting it ready. [pause long] Almost done.',
+  'One moment while I put this together for you.',
+  'Just a moment, I\'m putting this together for you.',
+  'Bear with me a second while I get this ready for you.',
 ];
 /** Bump when the lines change, so they're recorded again. */
-const HOLD_VERSION = 3;
+const HOLD_VERSION = 4;
 
 async function speak(key, voice, text) {
   spoken += text.length;

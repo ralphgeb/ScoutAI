@@ -1078,6 +1078,32 @@ export function combineGroup(stories, ids, leadId) {
   return { lead, members, others };
 }
 
+const DESK_STOP = new Set('the a an and or of to in on for with at by from as is are was were be been its it this that after over amid into about than more new says say said will would could may might can not no up down out off his her their our your has have had what who why how when where which while ceo chief firm firms company companies report reports reported latest live update updates first last year years week weeks day days today first just also us uk us’s news shares stock stocks market markets deal deals plan plans'.split(' '));
+const deskStem = (w) => w.replace(/’s$|'s$/, '').replace(/(ings|ing|ers|er|ed|es|s)$/, '');
+function deskTokens(s) {
+  const words = `${s.headline || ''} ${s.claim || ''}`.match(/[A-Za-z][A-Za-z0-9’'.-]*|\$?\d[\d.,]*(bn|m|tn|%)?/g) || [];
+  return new Set(words.map((w) => w.toLowerCase().replace(/[.’'-]+$/, '')).filter((w) => w.length > 2 && !DESK_STOP.has(w)).map(deskStem));
+}
+
+/** Clusters of stories that look related (shared rare words in headline and claim), for the editor to split into stories. */
+export function deskCandidates(pool) {
+  const toks = pool.map(deskTokens);
+  const df = new Map();
+  for (const t of toks) for (const w of t) df.set(w, (df.get(w) || 0) + 1);
+  const idf = (w) => Math.log(pool.length / (df.get(w) || 1));
+  const weight = toks.map((t) => [...t].reduce((n, w) => n + idf(w), 0));
+  const parent = pool.map((_, i) => i);
+  const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+  for (let i = 0; i < pool.length; i++) for (let j = i + 1; j < pool.length; j++) {
+    let shared = 0, n = 0;
+    for (const w of toks[i]) if (toks[j].has(w)) { shared += idf(w); n++; }
+    if (n >= 2 && shared / Math.max(1, Math.min(weight[i], weight[j])) >= 0.22) parent[find(i)] = find(j);
+  }
+  const groups = new Map();
+  pool.forEach((s, i) => { const k = find(i); (groups.get(k) || groups.set(k, []).get(k)).push(s); });
+  return [...groups.values()].filter((g) => g.length > 1).flatMap((g) => chunk(g.sort((a, b) => (a.headline || '').localeCompare(b.headline || '')), 40));
+}
+
 export async function editorsDesk(stories, apiKey) {
   // two passes: the second sees the combined stories and catches what the first missed
   for (let pass = 1; pass <= 2; pass++) {
@@ -1095,6 +1121,26 @@ async function deskPass(stories, apiKey, pass) {
   const sorted = [...pool].sort((a, b) => (a.headline || '').localeCompare(b.headline || ''));
   const parts = chunk(sorted, 800);
   const plan = [];
+  // first, clusters of stories that look related: the editor splits each into stories
+  const clusters = deskCandidates(pool);
+  const clusterCalls = [];
+  for (let k = 0, cur = []; k < clusters.length; k++) {
+    cur.push(clusters[k]);
+    if (cur.reduce((n, c) => n + c.length, 0) >= 120 || k === clusters.length - 1) { clusterCalls.push(cur); cur = []; }
+  }
+  await runParallel(clusterCalls, 3, async (cl) => {
+    const text = cl.map((c, n) => `Cluster ${n + 1}:\n` + c.map((s) => `${s.id} | ${s.section} | ${hours(s)}h | ${s.sources?.length || 1} | ${s.importance ?? '?'} | ${(s.headline || '').slice(0, 140)} — ${(s.claim || '').slice(0, 140)}`).join('\n')).join('\n\n');
+    try {
+      plan.push(await callDirect({
+        model: BRIEFING_MODEL, max_tokens: 8000,
+        system: DESK_SYSTEM + '\nThe stories come in clusters that look related; split each cluster into the stories a newspaper would run (a cluster can hold several separate stories, or none to combine). Combine only within a cluster.',
+        tools: [DESK_TOOL], tool_choice: { type: 'tool', name: 'record_desk' },
+        messages: [{ role: 'user', content: text }],
+      }, apiKey));
+    } catch (e) { if (e.fatal) throw e; log(`Editor's desk (clusters): ${e.message}`); }
+  });
+  log(`Editor's desk (pass ${pass}): ${clusters.length} clusters of related-looking stories (${clusters.reduce((n, c) => n + c.length, 0)} stories) checked.`);
+  // then the whole list, for importance and anything the clusters missed
   await runParallel(parts, 2, async (part) => {
     const list = part.map((s) => `${s.id} | ${s.section} | ${hours(s)}h | ${s.sources?.length || 1} | ${s.importance ?? '?'} | ${(s.headline || s.claim || '').slice(0, 140)} — ${(s.claim || '').slice(0, 140)}`).join('\n');
     try {

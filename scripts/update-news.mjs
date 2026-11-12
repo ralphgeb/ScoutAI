@@ -356,6 +356,107 @@ export async function readArticles(articles) {
   log(`Read ${withText} of ${articles.length} articles in full (the rest use their feed summary).`);
 }
 
+
+// ---------- 2b. Paywalled outlets: the same story from open outlets ----------
+// The FT, the WSJ, Bloomberg, The Times and The Economist give us little more than a headline
+// and a teaser. For those, the updater looks for the same event at open outlets (Reuters, AP,
+// the BBC, the Guardian…), reads their reporting and gives it to the AI as well, so the summary
+// has the facts. The paywalled outlet stays the story's lead source; the others are listed
+// after it, and their picture is used when the original has none.
+export const PAYWALLED = /^(the )?(financial times|ft(?=$| )|wall street journal|wsj|bloomberg|times(?=$)|economist)/i;
+const OPEN_MIN_TEXT = 1500;     // articles with less text than this get open coverage looked up
+const OPEN_PER_STORY = 2;       // open articles read per story
+
+/** How alike two headlines are (shared words), 0 to 1. */
+function overlap(a, b) {
+  const A = words(a); const B = words(b);
+  if (!A.size || !B.size) return 0;
+  let both = 0; for (const w of A) if (B.has(w)) both++;
+  return both / Math.min(A.size, B.size);
+}
+
+/** Google News search (RSS): each result's headline and outlet; the link goes through Google
+ *  News, which fetchArticle follows to the publisher's own page. */
+async function googleNewsSearch(query) {
+  const xml = await getText(`https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en-GB&gl=GB&ceid=GB:en`, 10000);
+  return [...xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)].slice(0, 12).map(([, it]) => {
+    const outlet = xmlText(it, 'source');
+    const title = xmlText(it, 'title').replace(new RegExp(`\\s+-\\s+${outlet.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`), '');
+    return { title, outlet, link: xmlText(it, 'link'), image: '' };
+  }).filter((c) => c.title && c.link);
+}
+
+export async function addOpenCoverage(articles, label = 'new') {
+  const need = articles.filter((a) => PAYWALLED.test(a.source || '') && (a.text || '').length < OPEN_MIN_TEXT);
+  if (!need.length) return 0;
+  let found = 0, pictures = 0, searched = 0;
+  await runParallel(need, 6, async (a) => {
+    const query = String(a.title || '').replace(/\s+[-|–]\s+[^-|–]+$/, '').slice(0, 140);
+    const results = [...await bingNews(query).catch(() => []), ...await googleNewsSearch(query).catch(() => [])];
+    searched += results.length;
+    const picks = results
+      .filter((c) => c.link && !PAYWALLED.test(c.outlet || '') && !BLOCKED.test(c.outlet || '') && !/ft\.com|wsj\.com|bloomberg\.com|thetimes\.|economist\.com/i.test(c.link))
+      .map((c) => ({ ...c, score: overlap(c.title, query) + (REPUTABLE.test(c.outlet || '') ? 0.15 : 0) }))
+      .filter((c) => c.score >= 0.45)
+      .sort((x, y) => y.score - x.score)
+      .slice(0, OPEN_PER_STORY + 1);
+    const extra = [];
+    for (const c of picks) {
+      if (extra.length >= OPEN_PER_STORY) break;
+      const page = await fetchArticle(c.link).catch(() => ({ text: '' }));
+      if ((page.text || '').length < 400) continue;
+      extra.push({ name: c.outlet, title: c.title, link: page.url || c.link, published: page.published || a.published,
+        image: (page.image && !BAD_IMAGE.test(page.image)) ? page.image : (c.image || ''), text: page.text });
+    }
+    if (!extra.length) return;
+    found++;
+    const own = a.text || a.snippet || '';
+    a.text = [own ? `${a.source}'s own text (paywalled, partial): ${own}` : '',
+      ...extra.map((x) => `The same story as reported by ${x.name}:\n${x.text.slice(0, 2600)}`)].filter(Boolean).join('\n\n');
+    a.openSources = extra.map(({ text, ...src }) => src);
+    if (!a.image) {
+      const pic = extra.find((x) => x.image)?.image;
+      if (pic) { a.image = pic; pictures++; }
+    }
+  });
+  log(`Paywalled outlets (${label}): open coverage found for ${found} of ${need.length} stories (${searched} search results); ${pictures} pictures borrowed.`);
+  return found;
+}
+
+/** Today's stories that only have a paywalled outlet and a thin summary: look again for open
+ *  coverage, and rewrite the summary when some is found (at most 40 a run). */
+export async function beefUpPaywalled(stories, apiKey) {
+  const since = Date.now() - 36 * 3600e3;
+  const thin = stories.filter((s) => s.sources?.length === 1 && PAYWALLED.test(s.sources[0].name || '')
+    && Date.parse(s.first_seen || 0) > since && (s.summary || '').length < 700 && !s.open_checked).slice(0, 40);
+  if (!thin.length) return;
+  const arts = thin.map((s) => ({ source: s.sources[0].name, title: s.headline, link: s.sources[0].link,
+    published: s.sources[0].published || s.first_published, snippet: s.summary || s.claim || '', text: '', image: s.image || '', story: s }));
+  await addOpenCoverage(arts, 'earlier stories');
+  const ready = arts.filter((a) => a.openSources?.length);
+  thin.forEach((s) => { s.open_checked = true; });
+  let rewritten = 0;
+  await runParallel(chunk(ready, BATCH_SIZE), PARALLEL, async (batch) => {
+    try {
+      const analyses = await analyseBatch(batch, [], apiKey);
+      for (const an of analyses) {
+        const a = batch[an.article_index];
+        if (!a || !an.keep) continue;
+        const clean = sanitise(an);
+        const s = a.story;
+        if ((clean.summary || '').length > (s.summary || '').length) { s.summary = clean.summary; s.claim = clean.claim || s.claim; rewritten++; }
+        if (clean.key_points.join(' ').length > (s.key_points || []).join(' ').length) s.key_points = clean.key_points;
+        if (!s.market_take && clean.market_take) s.market_take = clean.market_take;
+        if ((!s.stocks || !s.stocks.length) && clean.stocks.length) s.stocks = clean.stocks;
+        for (const src of a.openSources) if (!s.sources.some((x) => x.link === src.link)) s.sources.push(src);
+        if (!s.image && a.image) s.image = a.image;
+        s.last_updated = new Date().toISOString();
+      }
+    } catch (e) { log(`Rewriting paywalled stories: ${e.message}`); }
+  });
+  log(`Paywalled outlets: ${rewritten} earlier stories rewritten with open coverage.`);
+}
+
 // ---------- 3. Analyse with Claude ----------
 const ANALYSIS_TOOL = {
   name: 'record_analysis',
@@ -373,7 +474,7 @@ const ANALYSIS_TOOL = {
             same_story_as: { type: ['string', 'null'], description: 'If this article covers the SAME specific claim/event as an existing story, that story id (e.g. "a1b2c3d4e5"), or "article:N" for an earlier article in this batch. Otherwise null.' },
             status: { type: 'string', enum: ['rumour', 'confirmed', 'denied', 'news'], description: 'rumour = unconfirmed claim (leaks, "reportedly", "sources say", analyst predictions of company plans, "in talks"), including unconfirmed political or world developments that could move markets (e.g. possible tariffs, sanctions, rate decisions, ceasefires, government interventions). confirmed = an official announcement that confirms a previously rumoured claim. denied = officially denied. news = ordinary confirmed news.' },
             claim: { type: 'string', description: 'One short, neutral sentence in your own words stating the core news or claim. Max 140 chars.' },
-            summary: { type: 'string', description: 'A proper summary in your own words, based on the full article text: 4-6 sentences (about 80-130 words) covering what happened, the most important details and numbers, who is involved, and why it matters.' },
+            summary: { type: 'string', description: 'A proper summary in your own words, based on all the text given: 4-6 sentences (about 90-140 words). Open with the most striking fact, not with the outlet (never "The Financial Times reports…" or "An article says…"). Cover what happened, the concrete details and numbers, who is involved, the background, and why it matters. Write it like a sharp newspaper explainer: specific, vivid and readable, never vague or generic.' },
             key_points: { type: 'array', items: { type: 'string' }, description: '4-6 bullet points with the key facts, figures, background and what happens next, in your own words. Each one a full sentence. Never invent facts.' },
             likelihood: { type: ['integer', 'null'], description: 'For rumours: estimated % chance the claim turns out true (5-95). confirmed=100, denied=5, news=null.' },
             likelihood_reason: { type: 'string', description: 'One or two sentences on why you gave that likelihood. Empty for news.' },
@@ -409,7 +510,9 @@ const ANALYSIS_TOOL = {
 
 const SYSTEM = `You are the analysis engine of a news app with four sections: Tech (tech, AI, gadgets, companies, VC), Finance (markets, companies, economy), World (major world and political news) and Fashion (luxury and high fashion: luxury houses, major designers, the big fashion weeks and the business of luxury). For every article you read the text given and write a neutral summary and key points in your own words, decide whether it is confirmed news or an unconfirmed RUMOUR, estimate how likely rumours are to be true, and list the stocks the story could move.
 
-Writing: clear, neutral, British English, no hype. Everything must be in your own words; never copy sentences from the articles and never invent facts, figures or quotes.
+Writing: clear, neutral, British English, no hype, but never dull: lead with what is new and striking, use the concrete facts, names and numbers, and say why it matters. Everything must be in your own words; never copy sentences from the articles and never invent facts, figures or quotes.
+
+Paywalled outlets (FT, WSJ, Bloomberg, The Times, The Economist): their own text is often only a teaser, so other outlets' reporting of the same story may follow it. Use all of it for the facts, but only where it is clearly the same event; the story still belongs to the original outlet.
 
 For confirmed news: status "news", likelihood null, likelihood_reason "" and signals [].
 
@@ -711,6 +814,7 @@ export function mergeBatch(stories, batch, analyses, now = new Date().toISOStrin
 
     if (target) {
       if (!target.sources.some((s) => s.link === art.link)) target.sources.push(sourceEntry);
+      for (const src of art.openSources || []) if (!target.sources.some((s) => s.link === src.link)) target.sources.push(src);
       // Status upgrades: a rumour can become confirmed or denied.
       if (clean.status === 'confirmed' || clean.status === 'denied') {
         target.status = clean.status;
@@ -745,7 +849,7 @@ export function mergeBatch(stories, batch, analyses, now = new Date().toISOStrin
         image: art.image || '',
         image_checked: true,
         ...clean,
-        sources: [sourceEntry],
+        sources: [sourceEntry, ...(art.openSources || []).filter((s) => s.link !== art.link)],
         first_seen: now,
         first_published: art.published,
         last_updated: now
@@ -1444,7 +1548,8 @@ export async function main() {
     return;
   }
 
-  const fresh = await collect(feeds, seen);
+  // company press releases on the FT's markets pages are adverts, not news
+  const fresh = (await collect(feeds, seen)).filter((a) => !/markets\.ft\.com\/data\/announce/i.test(a.link || ''));
   const pool = fresh.slice(0, MAX_TRIAGE);
   log(`${fresh.length} new articles found; checking ${pool.length} headlines.`);
   const done = [];
@@ -1452,6 +1557,7 @@ export async function main() {
   let todo = pickFair(groups, MAX_NEW_PER_RUN);
   if (groups.length > todo.length) log(`${groups.length - todo.length} stories left for the next run.`);
   await readArticles(todo.map((g) => g.art));
+  await addOpenCoverage(todo.map((g) => g.art));
   // Old articles with a new date: Google News and some sites re-date old pieces,
   // so trust the date printed on the article page itself.
   const stale = todo.filter((g) => isStale(g.art));
@@ -1537,6 +1643,7 @@ export async function main() {
     if (e.fatal) { console.error('\n❌ ' + e.message + '\n'); process.exit(1); }
     log(`Section summaries failed: ${e.message}`);
   }
+  try { await beefUpPaywalled(news.stories, apiKey); } catch (e) { log(`Paywalled refresh failed: ${e.message}`); }
   briefing.updated = new Date().toISOString();
 
   await doStocks('all');

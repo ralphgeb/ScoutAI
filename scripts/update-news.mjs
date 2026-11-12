@@ -1082,7 +1082,9 @@ const DESK_STOP = new Set('the a an and or of to in on for with at by from as is
 const deskStem = (w) => w.replace(/’s$|'s$/, '').replace(/(ings|ing|ers|er|ed|es|s)$/, '');
 function deskTokens(s) {
   const words = `${s.headline || ''} ${s.claim || ''}`.match(/[A-Za-z][A-Za-z0-9’'.-]*|\$?\d[\d.,]*(bn|m|tn|%)?/g) || [];
-  return new Set(words.map((w) => w.toLowerCase().replace(/[.’'-]+$/, '')).filter((w) => w.length > 2 && !DESK_STOP.has(w)).map(deskStem));
+  // short words count when they're capitals (DC, EU, NHS), not when they're little words
+  return new Set(words.filter((w) => w.length > 2 || /^[A-Z]{2}$/.test(w.replace(/\./g, ''))).map((w) => w.toLowerCase().replace(/\./g, '').replace(/[’'-]+$/, ''))
+    .filter((w) => w.length > 1 && !DESK_STOP.has(w)).map((w) => (w === 'shot' ? 'shoot' : deskStem(w))));
 }
 
 /** Clusters of stories that look related (shared rare words in headline and claim), for the editor to split into stories. */

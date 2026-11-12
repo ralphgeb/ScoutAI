@@ -101,3 +101,11 @@ export async function addStats(counts) {
   stats.updated = now.toISOString();
   return publishFile('stats-updater.json', stats);
 }
+
+/** Adds one update run to stats-updater.json's list (the last 120), for the stats page. */
+export async function addRun(run) {
+  const stats = (await readFile('stats-updater.json')) || { months: {}, days: {} };
+  stats.runList = [run, ...(stats.runList || [])].slice(0, 120);
+  stats.updated = new Date().toISOString();
+  return publishFile('stats-updater.json', stats);
+}

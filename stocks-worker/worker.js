@@ -274,6 +274,8 @@ async function storyAudio(id, env, request) {
     if (wav) {
       await env.REQUESTS.put(`file:audio-story-${id}.wav`, wav, { expirationTtl: STORY_DAYS * 86400 });
       await bump(env, `stat:${day}:stories_gemini_on_demand`, 1, 70 * 86400);
+      await bump(env, `stat:${day}:voice:Gemini 2.5 Flash · Iapetus`, text.length, 70 * 86400);
+      await bump(env, `stat:${month}:voice:Gemini 2.5 Flash · Iapetus`, text.length, 400 * 86400);
       await bump(env, `stat:${day}:chars_gemini_on_demand`, text.length, 70 * 86400);
       await bump(env, `stat:${month}:chars_gemini_on_demand`, text.length, 400 * 86400);
       await bump(env, `stat:${month}:stories_recorded_on_demand`, 1, 400 * 86400);
@@ -285,8 +287,9 @@ async function storyAudio(id, env, request) {
   // then Chirp 3: HD in the same voice, as MP3 (inside its free million, with a daily cap)
   const used = Number(await env.REQUESTS.get(`stat:${day}:chars_on_demand`)) || 0;
   if (used + text.length > DAILY_STORY_CHARS) return json({ error: "Daily limit reached" }, 429);
-  let r;
+  let r, usedVoice = STORY_VOICES[0];
   for (const name of STORY_VOICES) {
+    usedVoice = name;
     r = await fetch(`https://texttospeech.googleapis.com/v1/text:synthesize?key=${env.GOOGLE_TTS_KEY}`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ input: { text }, voice: { languageCode: "en-GB", name }, audioConfig: { audioEncoding: "MP3", speakingRate: STORY_RATE } }),
@@ -299,6 +302,9 @@ async function storyAudio(id, env, request) {
   const mp3 = Buffer.from(b64, "base64");
   const body = mp3.buffer.slice(mp3.byteOffset, mp3.byteOffset + mp3.byteLength);
   await env.REQUESTS.put(`file:audio-story-${id}.mp3`, body, { expirationTtl: STORY_DAYS * 86400 });
+  const said = usedVoice.replace(/^en-GB-/, "").replace(/^Chirp3-HD-/, "Chirp 3: HD · ").replace(/^Wavenet-/, "WaveNet · ").replace(/^Standard-/, "Standard · ");
+  await bump(env, `stat:${day}:voice:${said}`, text.length, 70 * 86400);
+  await bump(env, `stat:${month}:voice:${said}`, text.length, 400 * 86400);
   await bump(env, `stat:${day}:chars_on_demand`, text.length, 70 * 86400);
   await bump(env, `stat:${day}:stories_recorded_on_demand`, 1, 70 * 86400);
   await bump(env, `stat:${month}:chars_on_demand`, text.length, 400 * 86400);
@@ -392,34 +398,98 @@ async function gatherStats(env) {
   // the last 30 days: the updater's numbers and the service's own (plays, stories recorded on demand)
   const dayKeys = [...Array(30)].map((_, k) => new Date(now.getTime() - k * 86400e3).toISOString().slice(0, 10));
   const perDay = await Promise.all(dayKeys.map(async (day) => {
-    const [pb, ps, dc, ds] = await Promise.all(["plays_briefing", "plays_story", "chars_on_demand", "stories_recorded_on_demand"]
+    const [pb, ps, dc, ds, dg] = await Promise.all(["plays_briefing", "plays_story", "chars_on_demand", "stories_recorded_on_demand", "chars_gemini_on_demand"]
       .map(async (k) => Number(await env.REQUESTS.get(`stat:${day}:${k}`)) || 0));
     const x = updater.days?.[day] || {};
     return {
       day, runs: x.runs || 0, added: x.stories_added || 0, merged: x.stories_merged || 0, aiRequests: x.ai_requests || 0,
       aiCostUSD: claudeCost(x),
       written: { Tech: x.written_tech || 0, Finance: x.written_finance || 0, World: x.written_world || 0, Fashion: x.written_fashion || 0 },
-      paywalled: { checked: x.paywalled_checked || 0, found: x.paywalled_found || 0, pictures: x.paywalled_pictures || 0, rewritten: x.paywalled_rewritten || 0 },
+      paywalled: { checked: x.paywalled_checked || 0, found: x.paywalled_found || 0, pictures: x.paywalled_pictures || 0, rewritten: x.paywalled_rewritten || 0, viaAI: x.paywalled_ai || 0 },
       chars: (x.chars_briefings || 0) + (x.chars_stories_ahead || 0),
       voice: { chirp: (x.chars_briefings || 0) + (x.chars_stories_ahead || 0), wavenet: dc, elevenlabs: x.chars_elevenlabs || 0,
         geminiFlash: x.chars_gemini_flash || 0, geminiPro: x.chars_gemini_pro || 0 },
       plays: { briefings: pb, stories: ps }, storiesOnDemand: ds,
+      // characters by voice: the updater's, plus stories recorded on demand by the service
+      voices: (() => {
+        const o = Object.fromEntries(Object.entries(x).filter(([k]) => k.startsWith("voice:")).map(([k, v]) => [k.slice(6), v]));
+        const add = (k, n) => { if (n) o[k] = (o[k] || 0) + n; };
+        add("Gemini 2.5 Flash · Iapetus", dg);
+        add(day >= "2026-11-12" ? "Chirp 3: HD · Iapetus" : "WaveNet · F", dc);
+        return o;
+      })(),
     };
   }));
 
+  // characters by voice: the updater's (briefings, links, hold lines) and the service's own (stories on demand)
+  const voiceKeys = async (prefix) => {
+    const out = {};
+    const list = await env.REQUESTS.list({ prefix });
+    await Promise.all(list.keys.map(async (k) => { out[k.name.slice(prefix.length)] = Number(await env.REQUESTS.get(k.name)) || 0; }));
+    return out;
+  };
+  const mergeVoices = (a, b) => { const o = { ...a }; for (const [k, v] of Object.entries(b)) o[k] = (o[k] || 0) + v; return o; };
+  const fromUpdater = (x) => Object.fromEntries(Object.entries(x || {}).filter(([k]) => k.startsWith('voice:')).map(([k, v]) => [k.slice(6), v]));
+  const today = dayKeys[0];
+  const voicesMonth = mergeVoices(fromUpdater(u), await voiceKeys(`stat:${month}:voice:`));
+  const voicesToday = mergeVoices(fromUpdater(updater.days?.[today]), await voiceKeys(`stat:${today}:voice:`));
+  // free allowances each month, per kind of voice (Google), and when to warn
+  const FREE = { 'Chirp 3: HD': 1000000, 'WaveNet': 1000000, 'Standard': 4000000 };
+  const kindOf = (label) => /^Chirp 3: HD/.test(label) ? 'Chirp 3: HD' : /^WaveNet/.test(label) ? 'WaveNet' : /^Standard/.test(label) ? 'Standard'
+    : /^Gemini/.test(label) ? 'Gemini' : /^ElevenLabs/.test(label) ? 'ElevenLabs' : 'Other';
+  const kinds = {};
+  for (const [label, chars] of Object.entries(voicesMonth)) {
+    const k = kindOf(label);
+    (kinds[k] ||= { chars: 0, voices: {} }).chars += chars;
+    kinds[k].voices[label] = chars;
+  }
+  const alerts = [];
+  for (const [k, free] of Object.entries(FREE)) {
+    const used = kinds[k]?.chars || 0;
+    if (used >= free) alerts.push({ level: 'red', text: `${k}: the free ${(free / 1e6).toFixed(0)} million characters are used up this month (${used.toLocaleString('en-GB')}); it's being charged now.` });
+    else if (used >= free * 0.8) alerts.push({ level: 'amber', text: `${k}: ${Math.round(used / free * 100)}% of this month's free ${(free / 1e6).toFixed(0)} million characters used.` });
+  }
+  const geminiMonthUSD = (kinds.Gemini?.chars || 0) / 1e6 * PRICES.geminiFlashUSD;
+  if (geminiMonthUSD > 15) alerts.push({ level: 'amber', text: `Gemini voices: about $${geminiMonthUSD.toFixed(2)} this month so far.` });
+  if (claude.costUSD > 10) alerts.push({ level: 'amber', text: `Claude: about $${claude.costUSD.toFixed(2)} this month so far.` });
+
+  const geminiOf = (vs) => Object.entries(vs || {}).filter(([k]) => /^Gemini/.test(k)).reduce((n, [, v]) => n + v, 0);
+  for (const p of perDay) {
+    p.geminiUSD = +(geminiOf(p.voices) / 1e6 * PRICES.geminiFlashUSD).toFixed(3);
+    p.totalUSD = +(p.aiCostUSD + p.geminiUSD).toFixed(3);
+  }
+  const t = perDay[0] || {};
+  const todayCost = {
+    claudeUSD: t.aiCostUSD || 0,
+    geminiUSD: +(geminiOf(voicesToday) / 1e6 * PRICES.geminiFlashUSD).toFixed(3),
+  };
+  todayCost.totalUSD = +(todayCost.claudeUSD + todayCost.geminiUSD).toFixed(3);
+  const monthCost = {
+    claudeUSD: claude.costUSD,
+    geminiUSD: +geminiMonthUSD.toFixed(2),
+    googleTTSUSD: +((chirp.costGBP + wavenet.costGBP) * PRICES.usdPerGBP).toFixed(2),
+    elevenlabs: 'plan',
+  };
+  monthCost.totalUSD = +(monthCost.claudeUSD + monthCost.geminiUSD + monthCost.googleTTSUSD).toFixed(2);
+
   return {
-    month, updated: updater.updated || null, prices: PRICES, estimatedCostUSD: totalUSD,
+    month, updated: updater.updated || null, prices: PRICES, estimatedCostUSD: monthCost.totalUSD,
+    cost: { today: todayCost, month: monthCost },
+    alerts,
+    voices: { month: voicesMonth, today: voicesToday, kinds, free: FREE },
+    runs: (updater.runList || []).slice(0, 60),
     voice: { chirp, wavenet, costGBP: +(chirp.costGBP + wavenet.costGBP).toFixed(2),
       briefings: { chars: u.chars_briefings || 0, recordings: u.briefings_recorded || 0 },
       storiesAhead: { chars: u.chars_stories_ahead || 0, stories: u.stories_recorded_ahead || 0 },
-      onDemand: { chars: demandChars, stories: demandStories, dailyCap: DAILY_STORY_CHARS },
+      onDemand: { chars: demandChars, stories: demandStories, dailyCap: DAILY_STORY_CHARS, geminiPerDay: GEMINI_STORIES_PER_DAY },
       elevenlabs: { chars: u.chars_elevenlabs || 0, creditsApprox: Math.round((u.chars_elevenlabs || 0) * 0.5) },
       gemini: { flash: geminiFlash.chars, pro: geminiPro.chars }, geminiFlash, geminiPro },
     claude,
-    plays: { briefings: briefingPlays, stories: storyPlays, top },
+    plays: { briefings: briefingPlays, stories: storyPlays, top, today: { briefings: t.plays?.briefings || 0, stories: t.plays?.stories || 0, recorded: t.storiesOnDemand || 0 } },
     news: { runs: u.runs || 0, added: u.stories_added || 0, merged: u.stories_merged || 0, skipped: u.stories_skipped || 0, aiRequests: u.ai_requests || 0,
       written: { Tech: u.written_tech || 0, Finance: u.written_finance || 0, World: u.written_world || 0, Fashion: u.written_fashion || 0 },
-      paywalled: { checked: u.paywalled_checked || 0, found: u.paywalled_found || 0, pictures: u.paywalled_pictures || 0, rewritten: u.paywalled_rewritten || 0 } },
+      paywalled: { checked: u.paywalled_checked || 0, found: u.paywalled_found || 0, pictures: u.paywalled_pictures || 0, rewritten: u.paywalled_rewritten || 0,
+        viaAI: u.paywalled_ai || 0, rechecked: u.paywalled_rechecked || 0 } },
     days: perDay,
   };
 }

@@ -42,10 +42,10 @@ const SECTION_SHARE = { Tech: 0.25, Finance: 0.25, World: 0.25, Fashion: 0.25 };
 const BLOCKED = /cnbc|the hindu\b|thehindu|hindustan times|hindustantimes|times of india|timesofindia|indiatimes|economic times|ndtv|livemint|\bmint\b|business standard|news18|india today|indiatoday|deccan|the print\b|theprint|firstpost|moneycontrol/i;
 const FASHION_OUTLETS = /WWD|Business of Fashion|Vogue|Harper's Bazaar|Fashionista|Highsnobiety|Hypebeast|Telegraph Fashion|Guardian Fashion/i;
 
-import { makeAudio, makeSamples, makeGeminiSamples } from './audio.mjs';
+import { makeAudio, makeSamples, makeGeminiSamples, audioUsage } from './audio.mjs';
 import { parseFeed, findMetaImage, findPublished, stripHtml } from './feed-parser.mjs';
 import { updateStocks, validSymbol } from './stocks.mjs';
-import { publishFile, publishStocks, readPublishedStocks, addStats } from './publish.mjs';
+import { publishFile, publishStocks, readPublishedStocks, addStats, addRun } from './publish.mjs';
 import { vapidKeys, ensurePublicKey, saveFromApp, sendMorning } from './push.mjs';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
@@ -392,20 +392,76 @@ async function googleNewsSearch(query) {
   }).filter((c) => c.title && c.link);
 }
 
-export async function addOpenCoverage(articles, label = 'new') {
+const OPEN_SITES = 'site:reuters.com OR site:apnews.com OR site:finance.yahoo.com';
+const EXCLUDE_LINK = /ft\.com|wsj\.com|bloomberg\.com|thetimes\.|economist\.com|wwd\.com|businessoffashion\.com/i;
+
+const SAME_TOOL = {
+  name: 'record_same',
+  description: 'Record, for each pair, whether the candidate article reports the same specific event as the headline.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      pairs: { type: 'array', items: { type: 'object', properties: {
+        id: { type: 'string' }, same: { type: 'boolean', description: 'true only if it is clearly the same specific event (same company, deal, decision or incident), not just the same topic.' },
+      }, required: ['id', 'same'] } },
+    },
+    required: ['pairs'],
+  },
+};
+
+/** Asks the AI which near matches are really the same story (one cheap request for many). */
+async function confirmSame(pairs, apiKey) {
+  const ok = new Set();
+  for (const part of chunk(pairs, 40)) {
+    try {
+      const input = await callDirect({
+        model: MODEL, max_tokens: 2000,
+        system: 'You check whether two news headlines report the same specific event. Be strict: same topic is not enough. Call record_same once.',
+        tools: [SAME_TOOL], tool_choice: { type: 'tool', name: 'record_same' },
+        messages: [{ role: 'user', content: part.map((p) => `${p.id}\nHeadline: ${p.headline}\nCandidate (${p.outlet}): ${p.candidate}`).join('\n\n') }],
+      }, apiKey);
+      for (const r of input.pairs || []) if (r.same) ok.add(r.id);
+    } catch (e) { log(`Same-story check: ${e.message}`); }
+  }
+  return ok;
+}
+
+export async function addOpenCoverage(articles, label = 'new', apiKey = process.env.ANTHROPIC_API_KEY) {
   const need = articles.filter((a) => ENRICH.test(a.source || '') && (a.text || '').length < OPEN_MIN_TEXT);
   if (!need.length) return 0;
-  let found = 0, pictures = 0, searched = 0;
+  let found = 0, pictures = 0, searched = 0, viaAI = 0;
+  const near = [];   // { a, c }
+  const sure = new Map();   // article -> candidates
   await runParallel(need, 6, async (a) => {
     const query = String(a.title || '').replace(/\s+[-|–]\s+[^-|–]+$/, '').slice(0, 140);
-    const results = [...await bingNews(query).catch(() => []), ...await googleNewsSearch(query).catch(() => [])];
+    const results = [
+      ...await bingNews(query).catch(() => []),
+      ...await googleNewsSearch(query).catch(() => []),
+      // the wires and Yahoo Finance directly: they carry much of the same news
+      ...await googleNewsSearch(`${query.split(' ').slice(0, 10).join(' ')} ${OPEN_SITES}`).catch(() => []),
+    ];
     searched += results.length;
-    const picks = results
-      .filter((c) => c.link && !PAYWALLED.test(c.outlet || '') && !BLOCKED.test(c.outlet || '') && c.outlet !== a.source && !/ft\.com|wsj\.com|bloomberg\.com|thetimes\.|economist\.com|wwd\.com|businessoffashion\.com/i.test(c.link))
+    const seen = new Set();
+    const scored = results
+      .filter((c) => c.link && !PAYWALLED.test(c.outlet || '') && !BLOCKED.test(c.outlet || '') && c.outlet !== a.source && !EXCLUDE_LINK.test(c.link))
+      .filter((c) => !seen.has(c.link) && seen.add(c.link))
       .map((c) => ({ ...c, score: overlap(c.title, query) + (REPUTABLE.test(c.outlet || '') ? 0.15 : 0) }))
-      .filter((c) => c.score >= 0.45)
-      .sort((x, y) => y.score - x.score)
-      .slice(0, OPEN_PER_STORY + 1);
+      .sort((x, y) => y.score - x.score);
+    const strong = scored.filter((c) => c.score >= 0.45).slice(0, OPEN_PER_STORY + 1);
+    if (strong.length) sure.set(a, strong);
+    else for (const c of scored.filter((c) => c.score >= 0.25).slice(0, 3)) near.push({ a, c });
+  });
+  // near matches: an AI check decides which are the same story
+  if (near.length && apiKey) {
+    const ok = await confirmSame(near.map((n, k) => ({ id: `p${k}`, headline: n.a.title, candidate: n.c.title, outlet: n.c.outlet })), apiKey);
+    near.forEach((n, k) => {
+      if (!ok.has(`p${k}`)) return;
+      const list = sure.get(n.a) || [];
+      if (!list.length) viaAI++;
+      if (list.length < OPEN_PER_STORY + 1) { list.push(n.c); sure.set(n.a, list); }
+    });
+  }
+  await runParallel([...sure.entries()], 6, async ([a, picks]) => {
     const extra = [];
     for (const c of picks) {
       if (extra.length >= OPEN_PER_STORY) break;
@@ -425,23 +481,24 @@ export async function addOpenCoverage(articles, label = 'new') {
       if (pic) { a.image = pic; pictures++; }
     }
   });
-  openStats.checked += need.length; openStats.found += found; openStats.pictures += pictures;
-  log(`Paywalled outlets (${label}): open coverage found for ${found} of ${need.length} stories (${searched} search results); ${pictures} pictures borrowed.`);
+  openStats.checked += need.length; openStats.found += found; openStats.pictures += pictures; openStats.viaAI += viaAI;
+  log(`Paywalled outlets (${label}): open coverage found for ${found} of ${need.length} stories (${searched} search results, ${viaAI} confirmed by the AI check); ${pictures} pictures borrowed.`);
   return found;
 }
 
-/** Today's stories that only have a paywalled outlet and a thin summary: look again for open
- *  coverage, and rewrite the summary when some is found (at most 40 a run). */
+/** Stories from the last 48 hours that only have a paywalled outlet and a thin summary: look again
+ *  for open coverage on every run, and rewrite the summary when some is found. */
 export async function beefUpPaywalled(stories, apiKey) {
-  const since = Date.now() - 36 * 3600e3;
+  // every story still without open coverage is looked for again on each run, for 48 hours
+  const since = Date.now() - 48 * 3600e3;
   const thin = stories.filter((s) => s.sources?.length === 1 && ENRICH.test(s.sources[0].name || '')
-    && Date.parse(s.first_seen || 0) > since && (s.summary || '').length < 700 && !s.open_checked).slice(0, 40);
+    && Date.parse(s.first_seen || 0) > since && (s.summary || '').length < 700).slice(0, 150);
+  openStats.earlierChecked += thin.length;
   if (!thin.length) return;
   const arts = thin.map((s) => ({ source: s.sources[0].name, title: s.headline, link: s.sources[0].link,
     published: s.sources[0].published || s.first_published, snippet: s.summary || s.claim || '', text: '', image: s.image || '', story: s }));
-  await addOpenCoverage(arts, 'earlier stories');
+  await addOpenCoverage(arts, 'earlier stories', apiKey);
   const ready = arts.filter((a) => a.openSources?.length);
-  thin.forEach((s) => { s.open_checked = true; });
   let rewritten = 0;
   await runParallel(chunk(ready, BATCH_SIZE), PARALLEL, async (batch) => {
     try {
@@ -563,7 +620,7 @@ let aiCalls = 0;
 /** Tokens read and written by Claude this run (half price through the batch queue), for /stats. */
 let aiTokens = { in: 0, out: 0, batchIn: 0, batchOut: 0 };
 /** Paywalled and hard-to-read stories this run: looked up, open coverage found, pictures borrowed. */
-export const openStats = { checked: 0, found: 0, pictures: 0, rewritten: 0 };
+export const openStats = { checked: 0, found: 0, pictures: 0, rewritten: 0, viaAI: 0, earlierChecked: 0 };
 
 function batchCall(body, apiKey) {
   return new Promise((resolve, reject) => {
@@ -1583,7 +1640,7 @@ export async function main() {
   let todo = pickFair(groups, MAX_NEW_PER_RUN);
   if (groups.length > todo.length) log(`${groups.length - todo.length} stories left for the next run.`);
   await readArticles(todo.map((g) => g.art));
-  await addOpenCoverage(todo.map((g) => g.art));
+  await addOpenCoverage(todo.map((g) => g.art), 'new', apiKey);
   // Old articles with a new date: Google News and some sites re-date old pieces,
   // so trust the date printed on the article page itself.
   const stale = todo.filter((g) => isStale(g.art));
@@ -1689,8 +1746,18 @@ export async function main() {
   await addStats({ runs: 1, stories_added: stats.added, stories_merged: stats.merged, stories_skipped: stats.dropped, ai_requests: aiCalls,
     ai_in: aiTokens.in, ai_out: aiTokens.out, ai_batch_in: aiTokens.batchIn, ai_batch_out: aiTokens.batchOut,
     paywalled_checked: openStats.checked, paywalled_found: openStats.found, paywalled_pictures: openStats.pictures, paywalled_rewritten: openStats.rewritten,
+    paywalled_ai: openStats.viaAI, paywalled_rechecked: openStats.earlierChecked,
     ...Object.fromEntries(Object.entries(bySec).map(([k, v]) => [`written_${k.toLowerCase()}`, v])) })
     .catch(() => {});
+  const aiCostUSD = +(((aiTokens.in * 0.10 + aiTokens.out * 0.50) + (aiTokens.batchIn * 0.10 + aiTokens.batchOut * 0.50) / 2) / 1e6).toFixed(4);
+  await addRun({
+    at: runStarted, edition: londonHour() < 12 ? 'Morning' : 'Evening', manual: process.env.GITHUB_EVENT_NAME === 'workflow_dispatch' && MODE === 'full',
+    written: stats.added, merged: stats.merged, skipped: stats.dropped, bySection: bySec,
+    paywalled: { checked: openStats.checked, found: openStats.found, viaAI: openStats.viaAI, pictures: openStats.pictures,
+      rechecked: openStats.earlierChecked, rewritten: openStats.rewritten },
+    ai: { requests: aiCalls, tokensIn: aiTokens.in + aiTokens.batchIn, tokensOut: aiTokens.out + aiTokens.batchOut, costUSD: aiCostUSD, model: MODEL },
+    voices: audioUsage.byVoice, voiceCostUSD: audioUsage.costUSD,
+  }).catch(() => {});
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

@@ -995,13 +995,14 @@ const MERGE_TOOL = {
         items: {
           type: 'object',
           properties: {
-            id: { type: 'string' },
+            id: { type: 'string', description: 'The story id given after "Story".' },
             claim: { type: 'string', description: 'One neutral sentence with the latest core news, max 140 chars.' },
             summary: { type: 'string', description: 'One coherent story of 5-7 sentences (about 110-170 words) written like a journalist, not an aggregator: lead with the latest and most important fact, then how events unfolded, the concrete details and numbers from all the reports, and why it matters. Never mention "reports" or "articles"; never contradict yourself with overtaken facts (describe them as earlier steps).' },
             key_points: { type: 'array', items: { type: 'string' }, description: '4-6 full-sentence key facts, latest first. Never invent facts.' },
             status: { type: 'string', enum: ['rumour', 'confirmed', 'denied', 'news'], description: 'The status of the latest state of the story.' },
+            not_same: { type: 'array', items: { type: 'string' }, description: 'Ids of pieces that are NOT about the same event or developing story (left out of the summary). Empty if all belong.' },
           },
-          required: ['id', 'claim', 'summary', 'key_points', 'status'],
+          required: ['id', 'not_same', 'claim', 'summary', 'key_points', 'status'],
         },
       },
     },
@@ -1064,20 +1065,60 @@ async function deskPass(stories, apiKey, pass) {
     } catch (e) { if (e.fatal) throw e; log(`Editor's desk: ${e.message}`); }
   });
 
-  // combine the groups (a story only joins one group)
-  const used = new Set();
+  // the proposed groups (a story only joins one group)
+  const byId0 = new Map(stories.map((s) => [s.id, s]));
+  const taken = new Set();
+  const proposed = [];
+  for (const p of plan) for (const g of p.groups || []) {
+    const ids = [...new Set([g.lead, ...(g.ids || [])])].filter((id) => byId0.has(id) && !taken.has(id));
+    if (ids.length < 2 || !ids.includes(g.lead)) continue;
+    ids.forEach((id) => taken.add(id));
+    proposed.push({ ids, lead: g.lead, headline: trim(g.headline, 120), importance: g.importance });
+  }
+
+  // a journalist writes each group as one story, and leaves out any part that isn't the same story
+  const written = new Map();
+  await runParallel(chunk(proposed, 6), PARALLEL, async (batch) => {
+    const text = batch.map((g) => `Story ${g.lead} — proposed headline: ${g.headline}\n` + g.ids.map((id) => byId0.get(id))
+      .sort((a, b) => (a.first_published || a.first_seen || '').localeCompare(b.first_published || b.first_seen || ''))
+      .map((m) => `• [${m.id}] ${m.first_published || m.first_seen || ''} | ${m.headline}\n  ${m.summary || m.claim || ''}\n  ${(m.key_points || []).map((k) => (typeof k === 'string' ? k : k?.text || '')).join(' ')}`).join('\n')).join('\n\n');
+    try {
+      const input = await callClaude({
+        model: MODEL, max_tokens: 7000,
+        system: 'You are a news journalist. Each story below was reported in several pieces (oldest first, each with its [id]). First check every piece: list in not_same the ids of any piece that is NOT about the same event or developing story as the rest, and leave those out completely. Then write the rest as ONE coherent story with the latest facts first. Call record_stories once.',
+        tools: [MERGE_TOOL], tool_choice: { type: 'tool', name: 'record_stories' },
+        messages: [{ role: 'user', content: text }],
+      }, apiKey);
+      for (const r of input.stories || []) if (r?.id) written.set(r.id, r);
+    } catch (e) { if (e.fatal) throw e; log(`Combined story rewrite: ${e.message}`); }
+  });
+
   const combined = [];
   const removed = new Set();
-  for (const p of plan) for (const g of p.groups || []) {
-    const ids = (g.ids || []).filter((id) => !used.has(id) && !removed.has(id));
-    if (!ids.includes(g.lead)) ids.unshift(g.lead);
+  const used = new Set();
+  let leftOut = 0;
+  for (const g of proposed) {
+    const r = written.get(g.lead);
+    if (!r?.summary) continue;   // not rewritten: leave the stories as they are
+    const out = new Set((r.not_same || []).filter((id) => id !== g.lead));
+    const ids = g.ids.filter((id) => !out.has(id));
+    leftOut += g.ids.length - ids.length;
     const res = combineGroup(stories, ids, g.lead);
     if (!res) continue;
     res.members.forEach((m) => used.add(m.id));
     res.others.forEach((o) => removed.add(o.id));
-    res.lead.headline = trim(g.headline, 120) || res.lead.headline;
-    res.lead.importance = Math.max(1, Math.min(10, Math.round(Number(g.importance) || res.lead.importance || 5)));
-    combined.push({ lead: res.lead, members: res.members });
+    const s = res.lead;
+    s.headline = g.headline || s.headline;
+    s.importance = Math.max(1, Math.min(10, Math.round(Number(g.importance) || s.importance || 5)));
+    s.summary = trim(r.summary, 1400);
+    if (r.claim) s.claim = trim(r.claim, 200);
+    const kp = (r.key_points || []).map((p) => trim(p, 300)).filter(Boolean).slice(0, 6);
+    if (kp.length) s.key_points = kp;
+    if (['rumour', 'confirmed', 'denied', 'news'].includes(r.status)) {
+      if (s.status === 'rumour' && r.status !== 'rumour') { s.resolved_at = new Date().toISOString(); if (r.status === 'confirmed') s.likelihood = 100; else if (r.status === 'news') s.likelihood = null; }
+      s.status = r.status;
+    }
+    combined.push(s);
   }
   const before = stories.length;
   for (let k = stories.length - 1; k >= 0; k--) if (removed.has(stories[k].id)) stories.splice(k, 1);
@@ -1090,33 +1131,7 @@ async function deskPass(stories, apiKey, pass) {
     const v = Math.max(1, Math.min(10, Math.round(Number(r.importance))));
     if (v && v !== s.importance) { s.importance = v; deskStats.rescored++; }
   }
-
-  // each combined story rewritten as one piece, from everything the parts said
-  await runParallel(chunk(combined, 6), PARALLEL, async (batch) => {
-    const text = batch.map(({ lead, members }) => `Story ${lead.id} — new headline: ${lead.headline}\n` + members
-      .sort((a, b) => (a.first_published || a.first_seen || '').localeCompare(b.first_published || b.first_seen || ''))
-      .map((m) => `• ${m.first_published || m.first_seen || ''} | ${m.headline}\n  ${m.summary || m.claim || ''}\n  ${(m.key_points || []).map((k) => (typeof k === 'string' ? k : k?.text || '')).join(' ')}`).join('\n')).join('\n\n');
-    try {
-      const input = await callClaude({
-        model: MODEL, max_tokens: 6000,
-        system: 'You are a news journalist. Each story below was reported in several pieces (oldest first). Write each as ONE coherent story with the latest facts first. Call record_stories once.',
-        tools: [MERGE_TOOL], tool_choice: { type: 'tool', name: 'record_stories' },
-        messages: [{ role: 'user', content: text }],
-      }, apiKey);
-      for (const r of input.stories || []) {
-        const s = byId.get(r.id);
-        if (!s) continue;
-        if (r.summary) s.summary = trim(r.summary, 1400);
-        if (r.claim) s.claim = trim(r.claim, 200);
-        const kp = (r.key_points || []).map((p) => trim(p, 300)).filter(Boolean).slice(0, 6);
-        if (kp.length) s.key_points = kp;
-        if (['rumour', 'confirmed', 'denied', 'news'].includes(r.status)) {
-          if (s.status === 'rumour' && r.status !== 'rumour') { s.resolved_at = new Date().toISOString(); if (r.status === 'confirmed') s.likelihood = 100; else if (r.status === 'news') s.likelihood = null; }
-          s.status = r.status;
-        }
-      }
-    } catch (e) { if (e.fatal) throw e; log(`Combined story rewrite: ${e.message}`); }
-  });
+  if (leftOut) log(`Editor's desk: ${leftOut} pieces left out of combined stories (not the same story).`);
   deskStats.groups += combined.length; deskStats.merged += before - stories.length;
   log(`Editor's desk (pass ${pass}): ${combined.length} stories combined from ${combined.length + before - stories.length} (${before - stories.length} folded in), ${deskStats.rescored} importance scores changed.`);
   return combined.length;

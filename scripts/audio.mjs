@@ -97,18 +97,17 @@ let elevenChars = 0;   // characters sent to ElevenLabs this run
 //   ELEVENLABS_MODEL    (optional) default eleven_multilingual_v2, the most natural
 const ELEVEN_SECTIONS = ['Tech', 'World'];
 const ELEVEN_VOICE = 'Xb7hH8MSUJpSbSDYk0k2';   // Alice
-const ELEVEN_MODEL = 'eleven_multilingual_v2';
+const ELEVEN_MODEL = 'eleven_flash_v2_5';   // Flash for every ElevenLabs recording
 /** Per briefing, to compare: World on Flash v2.5 (half the credits), Tech on Multilingual v2. */
-const ELEVEN_MODELS = { World: 'eleven_flash_v2_5' };
+const ELEVEN_MODELS = {};
 
 // Gemini TTS (Google's newer, directable voices) for Finance (Flash) and Fashion (Pro), through the
 // Gemini API with a Google AI Studio key (GEMINI_API_KEY). Told how to read, in the same Aoede voice
 // as Chirp, so the two can be compared. Gemini sends raw sound, which ffmpeg (on GitHub's runners)
 // turns into MP3. If Gemini fails, that briefing is recorded with Chirp 3: HD instead.
-const GEMINI = { Finance: 'gemini-2.5-flash-preview-tts', Fashion: 'gemini-2.5-pro-preview-tts' };
+const GEMINI = { Finance: 'gemini-2.5-flash-preview-tts', Fashion: 'gemini-2.5-flash-preview-tts' };   // Flash for both
 const GEMINI_VOICE = 'Callirrhoe';   // easy-going; picked from the /voices samples
-const GEMINI_PROMPT = 'Read this as a warm, lively British newsreader presenting a morning news briefing: '
-  + 'natural, friendly and clear, at a brisk but relaxed pace, with a light smile in the voice.';
+const GEMINI_PROMPT = 'Say in a warm, lively British newsreader voice:';
 let geminiChars = { flash: 0, pro: 0 };
 
 /** Long scripts go in parts, so each request stays small. */
@@ -148,7 +147,7 @@ async function speakGemini(_googleKey, model, text, voiceName = GEMINI_VOICE) {
       method: 'POST', signal: AbortSignal.timeout(180000),
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: `${GEMINI_PROMPT}\n\n${part}` }] }],
+        contents: [{ parts: [{ text: `${GEMINI_PROMPT} ${part}` }] }],
         generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName } } } },
       }),
     });
@@ -166,6 +165,31 @@ async function speakGemini(_googleKey, model, text, voiceName = GEMINI_VOICE) {
   const mp3 = await toMp3(Buffer.concat(pcm));
   geminiChars[/pro/.test(model) ? 'pro' : 'flash'] += plain.length;
   return mp3;
+}
+
+/** Links between briefings, by place in the list. */
+const TRANSITIONS = {
+  middle: ['Moving on to {s}.', 'Next up, {s}.', "Now, let's turn to {s}.", 'Over to {s}.', 'Right, {s} next.', 'Turning now to {s}.'],
+  last: ['And finally, {s}.', 'Last one, I promise: {s}.', 'To round things off, {s}.', 'One more before you go: {s}.'],
+};
+const SPOKEN_LINK = { Tech: 'tech', Finance: 'the markets', World: 'world news', Fashion: 'fashion' };
+const TRANS_PER_RUN = 3;   // new links recorded per section each run
+
+/** Which voice a section's briefing uses, as a label. */
+function engineFor(sec) {
+  if (ELEVEN_SECTIONS.includes(sec) && (process.env.ELEVENLABS_API_KEY || '').trim()) return `elevenlabs:${ELEVEN_MODELS[sec] || (process.env.ELEVENLABS_MODEL || '').trim() || ELEVEN_MODEL}`;
+  if (GEMINI[sec] && (process.env.GEMINI_API_KEY || '').trim()) return `gemini:${GEMINI[sec]}:${GEMINI_VOICE}`;
+  return 'chirp';
+}
+
+/** Says a short line in a section's own voice (Google's Chirp if the others fail). */
+async function speakFor(key, chirpName, sec, text) {
+  const engine = engineFor(sec);
+  try {
+    if (engine.startsWith('elevenlabs')) return await speakEleven(text, sec);
+    if (engine.startsWith('gemini')) return await speakGemini(key, GEMINI[sec], text);
+  } catch { /* Chirp below */ }
+  return speak(key, chirpName, text);
 }
 
 async function speakEleven(text, sec = '') {
@@ -279,6 +303,32 @@ export async function makeAudio(briefing, log = console.log, news = null) {
         const mp3 = await speak(key, name, HOLD[i]);
         if (await publishBinary(`audio-hold-${i}.mp3`, mp3, 'audio/mpeg')) index.hold.push(`/audio/hold-${i}.mp3`);
       } catch (e) { log(`Hold-on line ${i} skipped: ${e.message}`); }
+    }
+  }
+
+  // short links between briefings for "Play my briefings" ("Moving on to the markets.", "Last one,
+  // I promise: fashion."), in each section's own voice; a couple of new ones each run, so the set
+  // grows over the week and the app can vary them
+  index.transitions = {};
+  for (const sec of ['Tech', 'Finance', 'World', 'Fashion']) {
+    const engine = engineFor(sec);
+    const old = before.transitions?.[sec] || {};
+    const mine = (index.transitions[sec] = {});
+    let budget = TRANS_PER_RUN;
+    for (const kind of ['middle', 'last']) {
+      mine[kind] = (old[kind] || []).filter((t) => t.engine === engine);
+      for (let i = 0; i < TRANSITIONS[kind].length && budget > 0; i++) {
+        if (mine[kind].some((t) => t.n === i)) continue;
+        const text = TRANSITIONS[kind][i].replace('{s}', SPOKEN_LINK[sec]);
+        try {
+          const mp3 = await speakFor(key, name, sec, text);
+          const file = `trans-${sec}-${kind}-${i}`;
+          if (await publishBinary(`audio-${file}.mp3`, mp3, 'audio/mpeg')) {
+            mine[kind].push({ n: i, text, engine, path: `/audio/${file}.mp3` });
+            budget--;
+          }
+        } catch (e) { log(`Link "${text}" (${sec}) skipped: ${e.message}`); }
+      }
     }
   }
 

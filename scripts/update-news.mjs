@@ -365,6 +365,9 @@ export async function readArticles(articles) {
 // after it, and their picture is used when the original has none.
 export const PAYWALLED = /^(the )?(financial times|ft(?=$| )|wall street journal|wsj|bloomberg|times(?=$)|economist)/i;
 const OPEN_MIN_TEXT = 1500;     // articles with less text than this get open coverage looked up
+/** Outlets whose stories get open coverage looked up when we couldn't read enough of them: the
+ *  paywalled ones, and big outlets that often block automated reading. */
+export const ENRICH = new RegExp(PAYWALLED.source + '|^(the )?(new york times|washington post|telegraph|sunday times|forbes|wwd|business of fashion|vogue business|barron|reuters|the information|nikkei)', 'i');
 const OPEN_PER_STORY = 2;       // open articles read per story
 
 /** How alike two headlines are (shared words), 0 to 1. */
@@ -387,7 +390,7 @@ async function googleNewsSearch(query) {
 }
 
 export async function addOpenCoverage(articles, label = 'new') {
-  const need = articles.filter((a) => PAYWALLED.test(a.source || '') && (a.text || '').length < OPEN_MIN_TEXT);
+  const need = articles.filter((a) => ENRICH.test(a.source || '') && (a.text || '').length < OPEN_MIN_TEXT);
   if (!need.length) return 0;
   let found = 0, pictures = 0, searched = 0;
   await runParallel(need, 6, async (a) => {
@@ -395,7 +398,7 @@ export async function addOpenCoverage(articles, label = 'new') {
     const results = [...await bingNews(query).catch(() => []), ...await googleNewsSearch(query).catch(() => [])];
     searched += results.length;
     const picks = results
-      .filter((c) => c.link && !PAYWALLED.test(c.outlet || '') && !BLOCKED.test(c.outlet || '') && !/ft\.com|wsj\.com|bloomberg\.com|thetimes\.|economist\.com/i.test(c.link))
+      .filter((c) => c.link && !PAYWALLED.test(c.outlet || '') && !BLOCKED.test(c.outlet || '') && c.outlet !== a.source && !/ft\.com|wsj\.com|bloomberg\.com|thetimes\.|economist\.com|wwd\.com|businessoffashion\.com/i.test(c.link))
       .map((c) => ({ ...c, score: overlap(c.title, query) + (REPUTABLE.test(c.outlet || '') ? 0.15 : 0) }))
       .filter((c) => c.score >= 0.45)
       .sort((x, y) => y.score - x.score)
@@ -419,6 +422,7 @@ export async function addOpenCoverage(articles, label = 'new') {
       if (pic) { a.image = pic; pictures++; }
     }
   });
+  openStats.checked += need.length; openStats.found += found; openStats.pictures += pictures;
   log(`Paywalled outlets (${label}): open coverage found for ${found} of ${need.length} stories (${searched} search results); ${pictures} pictures borrowed.`);
   return found;
 }
@@ -427,7 +431,7 @@ export async function addOpenCoverage(articles, label = 'new') {
  *  coverage, and rewrite the summary when some is found (at most 40 a run). */
 export async function beefUpPaywalled(stories, apiKey) {
   const since = Date.now() - 36 * 3600e3;
-  const thin = stories.filter((s) => s.sources?.length === 1 && PAYWALLED.test(s.sources[0].name || '')
+  const thin = stories.filter((s) => s.sources?.length === 1 && ENRICH.test(s.sources[0].name || '')
     && Date.parse(s.first_seen || 0) > since && (s.summary || '').length < 700 && !s.open_checked).slice(0, 40);
   if (!thin.length) return;
   const arts = thin.map((s) => ({ source: s.sources[0].name, title: s.headline, link: s.sources[0].link,
@@ -454,6 +458,7 @@ export async function beefUpPaywalled(stories, apiKey) {
       }
     } catch (e) { log(`Rewriting paywalled stories: ${e.message}`); }
   });
+  openStats.rewritten += rewritten;
   log(`Paywalled outlets: ${rewritten} earlier stories rewritten with open coverage.`);
 }
 
@@ -525,6 +530,8 @@ Estimating likelihood (be calibrated, not dramatic):
 - Official denial: low. Official confirmation: status "confirmed", 100.
 - Long-range predictions (years out) are less certain.
 
+Finance news is for professionals (bankers, investors, analysts): give the deal size, the advisers or buyers if named, the valuation, the move in the share price, bond yield or currency, and what the market expects next. Score importance higher for deals, big-company earnings, central-bank decisions, market-moving data and rates, bonds, FX and commodities; lower for broad explainers, opinion, and personal-finance advice (mortgage tips, savings accounts, pensions advice), which are usually not kept.
+
 Fashion news: cover the designers, brands, collections and business angle; luxury groups and retailers (e.g. LVMH MC.PA, Kering KER.PA, Hermès RMS.PA, Richemont CFR.SW, Prada 1913.HK, Burberry BRBY.L, Inditex ITX.MC, Moncler MONC.MI) are the usual stocks. Celebrity and red-carpet style stories usually move no stocks.
 
 World and political news: say plainly what happened and, where relevant, how it could affect markets (indices, currencies, commodities, sectors). Unconfirmed reports of market-moving decisions are rumours.
@@ -549,6 +556,10 @@ const apiHeaders = (apiKey) => ({ 'content-type': 'application/json', 'x-api-key
 let batchStats = { sent: 0, done: 0, fallback: 0 };
 /** Every request to Claude this run (stories, briefings, pictures, stock summaries), for /stats. */
 let aiCalls = 0;
+/** Tokens read and written by Claude this run (half price through the batch queue), for /stats. */
+let aiTokens = { in: 0, out: 0, batchIn: 0, batchOut: 0 };
+/** Paywalled and hard-to-read stories this run: looked up, open coverage found, pictures borrowed. */
+export const openStats = { checked: 0, found: 0, pictures: 0, rewritten: 0 };
 
 function batchCall(body, apiKey) {
   return new Promise((resolve, reject) => {
@@ -600,7 +611,11 @@ async function flushBatch() {
   items.forEach((it, i) => {
     const r = results.get(`r${i}`);
     const tool = r?.type === 'succeeded' ? (r.message?.content || []).find((c) => c.type === 'tool_use') : null;
-    if (tool?.input) { batchStats.done++; aiCalls++; it.resolve(tool.input); } else retry.push(it);
+    if (tool?.input) {
+      batchStats.done++; aiCalls++;
+      aiTokens.batchIn += r.message?.usage?.input_tokens || 0; aiTokens.batchOut += r.message?.usage?.output_tokens || 0;
+      it.resolve(tool.input);
+    } else retry.push(it);
   });
   if (retry.length) await direct(retry);
 }
@@ -620,6 +635,8 @@ async function callDirect(body, apiKey) {
         body: JSON.stringify(body)
       });
       const json = await res.json();
+      aiTokens.in += (json.usage?.input_tokens || 0) + (json.usage?.cache_read_input_tokens || 0) + (json.usage?.cache_creation_input_tokens || 0);
+      aiTokens.out += json.usage?.output_tokens || 0;
       if (!res.ok) {
         const msg = json?.error?.message || res.statusText;
         if (res.status === 401) throw Object.assign(new Error('Your Anthropic API key was rejected. Check the ANTHROPIC_API_KEY secret on GitHub.'), { fatal: true });
@@ -676,7 +693,7 @@ const TRIAGE_TOOL = {
           type: 'object',
           properties: {
             i: { type: 'integer', description: 'Headline number.' },
-            keep: { type: 'boolean', description: 'false for sport, celebrity gossip, recipes, horoscopes, shopping deals and "best buys" lists, puzzles, podcasts/newsletters with no news, and trivial items. true for real tech, business, finance, economic, political and world news. Fashion is a LUXURY and high-fashion section: keep news about luxury houses and groups (LVMH, Kering, Hermès, Chanel, Prada, Richemont…), major designers and creative directors, the big four fashion weeks (Paris, Milan, London, New York) and couture, and major global fashion business. Drop local or regional fashion weeks, store openings in individual cities, local designers, regional or mass-market retail news, beauty contests, shopping edits, horoscopes and celebrity gossip.' },
+            keep: { type: 'boolean', description: 'false for sport, celebrity gossip, recipes, horoscopes, shopping deals and "best buys" lists, puzzles, podcasts/newsletters with no news, and trivial items. true for real tech, business, finance, economic, political and world news. Finance is for professionals (bankers, investors): drop personal-finance advice (mortgages, savings, pensions tips, credit cards) and consumer money stories unless they are major market news. Fashion is a LUXURY and high-fashion section: keep news about luxury houses and groups (LVMH, Kering, Hermès, Chanel, Prada, Richemont…), major designers and creative directors, the big four fashion weeks (Paris, Milan, London, New York) and couture, and major global fashion business. Drop local or regional fashion weeks, store openings in individual cities, local designers, regional or mass-market retail news, beauty contests, shopping edits, horoscopes and celebrity gossip.' },
             same_as: { type: ['string', 'null'], description: 'If it reports the SAME specific event as an existing story, that story id; or "a:N" for an earlier headline N in this list about the same event. Otherwise null. Be strict: same event, not just same topic.' }
           },
           required: ['i', 'keep', 'same_as']
@@ -1017,6 +1034,10 @@ export async function upgradeOld(stories, apiKey) {
 }
 
 // ---------- Fair mix: share each run between sections and outlets ----------
+/** The established outlets Scout leans on: their stories come first when picking what to analyse. */
+export const TIER1 = /^(the )?(reuters|associated press|ap news|ap\b|bloomberg|financial times|ft\b|wall street journal|wsj|economist|new york times|washington post|times\b|sunday times|telegraph|bbc|cnn|forbes|guardian|politico|axios|wwd|business of fashion|vogue business|nikkei|financial news|barron)/i;
+const tierFirst = (list) => [...list.filter((g) => TIER1.test(g.art.source || '')), ...list.filter((g) => !TIER1.test(g.art.source || ''))];
+
 export function pickFair(groups, max) {
   if (groups.length <= max) return groups;
   const bySection = {};
@@ -1031,7 +1052,7 @@ export function pickFair(groups, max) {
     while (queues.some((q) => q.length)) for (const q of queues) if (q.length) out.push(q.shift());
     return out;
   };
-  const roundRobin = (list) => weightedTurns(list, (g) => g.art.region || 'Global', (l) => turns(l, (g) => g.art.source));
+  const roundRobin = (list) => weightedTurns(list, (g) => g.art.region || 'Global', (l) => tierFirst(turns(l, (g) => g.art.source)));
   const ordered = Object.fromEntries(Object.entries(bySection).map(([k, v]) => [k, roundRobin(v)]));
   const picked = [];
   for (const [sec, share] of Object.entries(SECTION_SHARE)) picked.push(...(ordered[sec] || []).splice(0, Math.round(max * share)));
@@ -1384,7 +1405,7 @@ const SECTION_TOOL = {
 };
 const SECTION_FOCUS = {
   Tech: 'tech, AI, gadgets, big tech companies, startups and venture capital',
-  Finance: 'markets, companies, earnings, deals, central banks and the economy in the US, the UK, Europe and Asia',
+  Finance: 'what a banker or investor needs first thing: deals (M&A, IPOs, buyouts, capital raises), earnings and guidance from big companies, central banks and interest rates, bonds, currencies and commodities, banks and regulation, and the economic data that moves markets, in the US, the UK, Europe and Asia',
   World: 'major world and political news in the US, the UK, Europe and Asia, and what it could mean for markets',
   Fashion: 'luxury and high fashion: luxury houses and groups, major designers and creative directors, the big fashion weeks, and the business of luxury'
 };
@@ -1549,6 +1570,7 @@ export async function main() {
   }
 
   // company press releases on the FT's markets pages are adverts, not news
+  const runStarted = new Date().toISOString();
   const fresh = (await collect(feeds, seen)).filter((a) => !/markets\.ft\.com\/data\/announce/i.test(a.link || ''));
   const pool = fresh.slice(0, MAX_TRIAGE);
   log(`${fresh.length} new articles found; checking ${pool.length} headlines.`);
@@ -1658,7 +1680,12 @@ export async function main() {
   await writeJSON(SEEN_FILE, [...done, ...seen].slice(0, MAX_SEEN));
   if (USE_BATCH) log(`AI requests at half price: ${batchStats.done}; sent normally: ${batchStats.fallback}.`);
   log(`Done: ${stats.added} new stories, ${stats.merged} merged into existing, ${stats.dropped} skipped as irrelevant. ${news.stories.length} stories total.`);
-  await addStats({ runs: 1, stories_added: stats.added, stories_merged: stats.merged, stories_skipped: stats.dropped, ai_requests: aiCalls })
+  const bySec = {};
+  for (const st of news.stories) if ((st.first_seen || '') >= runStarted) bySec[normSection(st.section)] = (bySec[normSection(st.section)] || 0) + 1;
+  await addStats({ runs: 1, stories_added: stats.added, stories_merged: stats.merged, stories_skipped: stats.dropped, ai_requests: aiCalls,
+    ai_in: aiTokens.in, ai_out: aiTokens.out, ai_batch_in: aiTokens.batchIn, ai_batch_out: aiTokens.batchOut,
+    paywalled_checked: openStats.checked, paywalled_found: openStats.found, paywalled_pictures: openStats.pictures, paywalled_rewritten: openStats.rewritten,
+    ...Object.fromEntries(Object.entries(bySec).map(([k, v]) => [`written_${k.toLowerCase()}`, v])) })
     .catch(() => {});
 }
 

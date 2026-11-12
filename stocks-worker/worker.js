@@ -95,7 +95,7 @@ export default {
     // spoken briefings: /audio/Tech-chirp.mp3 (the MP3s the updater records each morning)
     const story = url.pathname.match(/^\/audio\/story\/([A-Za-z0-9_-]{4,64})\.mp3$/);
     if (story && (request.method === "GET" || request.method === "HEAD")) {
-      return storyAudio(story[1], env);
+      return storyAudio(story[1], env, request);
     }
 
     if (url.pathname === "/stats/play" && request.method === "POST") {
@@ -115,18 +115,17 @@ export default {
       return r;
     }
 
-    const audio = url.pathname.match(/^\/audio\/(?:(Tech|Finance|World|Fashion)-(standard|wavenet|chirp|intro)|sample-([A-Za-z]+(?:-[A-Z])?)|hold-([0-9]))\.mp3$/);
+    const audio = url.pathname.match(/^\/audio\/(?:(Tech|Finance|World|Fashion)-(standard|wavenet|chirp|intro)|sample-([A-Za-z]+(?:-[A-Z])?)|hold-([0-9])|(trans-(?:Tech|Finance|World|Fashion)-(?:middle|last)-[0-9]{1,2}))\.mp3$/);
     if (audio && (request.method === "GET" || request.method === "HEAD")) {
-      const name = audio[4] ? `audio-hold-${audio[4]}.mp3` : audio[3] ? `audio-sample-${audio[3]}.mp3` : `audio-${audio[1]}-${audio[2]}.mp3`;
+      const name = audio[5] ? `audio-${audio[5]}.mp3` : audio[4] ? `audio-hold-${audio[4]}.mp3` : audio[3] ? `audio-sample-${audio[3]}.mp3` : `audio-${audio[1]}-${audio[2]}.mp3`;
       const cache = caches.default;
       const key = new Request(`https://files.scout/${name}`);
       const hit = await cache.match(key);
-      const headers = { "Content-Type": "audio/mpeg", "Cache-Control": "max-age=300", "Accept-Ranges": "bytes", ...cors() };
-      if (hit) return new Response(hit.body, { headers });
+      if (hit) return audioResponse(await hit.arrayBuffer(), request, 300);
       const body = await env.REQUESTS.get(`file:${name}`, "arrayBuffer");
       if (!body) return json({ error: "Not recorded yet" }, 404);
       await cache.put(key, new Response(body, { headers: { "Content-Type": "audio/mpeg", "Cache-Control": "max-age=300" } }));
-      return new Response(body, { headers });
+      return audioResponse(body, request, 300);
     }
 
     if (["/stocks.json", "/prices.json", "/news.json", "/briefing.json", "/audio.json"].includes(url.pathname) && request.method === "GET") {
@@ -227,13 +226,28 @@ const STORY_RATE = 1.05;
 const STORY_DAYS = 10;
 const DAILY_STORY_CHARS = 30000;   // about 30 stories a day; 900,000 a month at most, under WaveNet's free million
 
-async function storyAudio(id, env) {
-  const headers = { "Content-Type": "audio/mpeg", "Cache-Control": "max-age=86400", ...cors() };
+/** An MP3, whole or the part asked for (Range), with its length, so players show the time. */
+function audioResponse(body, request, maxAge) {
+  const total = body.byteLength;
+  const headers = { "Content-Type": "audio/mpeg", "Cache-Control": `max-age=${maxAge}`, "Accept-Ranges": "bytes", ...cors() };
+  const m = (request.headers.get("Range") || "").match(/^bytes=(\d*)-(\d*)$/);
+  if (m && (m[1] || m[2])) {
+    let start = m[1] ? Number(m[1]) : Math.max(0, total - Number(m[2]));
+    let end = m[1] && m[2] ? Math.min(Number(m[2]), total - 1) : total - 1;
+    if (start >= total || start > end) return new Response(null, { status: 416, headers: { ...headers, "Content-Range": `bytes */${total}` } });
+    const part = body.slice(start, end + 1);
+    return new Response(request.method === "HEAD" ? null : part, { status: 206,
+      headers: { ...headers, "Content-Range": `bytes ${start}-${end}/${total}`, "Content-Length": String(part.byteLength) } });
+  }
+  return new Response(request.method === "HEAD" ? null : body, { headers: { ...headers, "Content-Length": String(total) } });
+}
+
+async function storyAudio(id, env, request) {
   const name = `file:audio-story-${id}.mp3`;
   const cache = caches.default;
   const key = new Request(`https://files.scout/story-${id}.mp3`);
   const hit = await cache.match(key);
-  if (hit) return new Response(hit.body, { headers });
+  if (hit) return audioResponse(await hit.arrayBuffer(), request, 86400);
   let body = await env.REQUESTS.get(name, "arrayBuffer");
   if (!body) {
     if (!env.GOOGLE_TTS_KEY) return json({ error: "Story audio is off" }, 503);
@@ -260,12 +274,13 @@ async function storyAudio(id, env) {
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
     body = bytes.buffer;
     await env.REQUESTS.put(name, body, { expirationTtl: STORY_DAYS * 86400 });
-    await bump(env, `stat:${day}:chars_on_demand`, text.length, 3 * 86400);
+    await bump(env, `stat:${day}:chars_on_demand`, text.length, 70 * 86400);
+    await bump(env, `stat:${day}:stories_recorded_on_demand`, 1, 70 * 86400);
     await bump(env, `stat:${month}:chars_on_demand`, text.length, 400 * 86400);
     await bump(env, `stat:${month}:stories_recorded_on_demand`, 1, 400 * 86400);
   }
   await cache.put(key, new Response(body, { headers: { "Content-Type": "audio/mpeg", "Cache-Control": "max-age=86400" } }));
-  return new Response(body, { headers });
+  return audioResponse(body, request, 86400);
 }
 
 async function bump(env, key, by, ttl) {
@@ -279,6 +294,7 @@ async function bump(env, key, by, ttl) {
 async function countPlay(env, kind, id, title) {
   const month = new Date().toISOString().slice(0, 7);
   await bump(env, `stat:${month}:plays_${kind}`, 1, 400 * 86400);
+  await bump(env, `stat:${new Date().toISOString().slice(0, 10)}:plays_${kind}`, 1, 70 * 86400);
   if (!id) return;
   const key = `play:${month}:${kind}:${id}`;
   const n = (Number(await env.REQUESTS.get(key)) || 0) + 1;
@@ -286,8 +302,18 @@ async function countPlay(env, kind, id, title) {
 }
 
 /** The numbers, for /stats here and halopro.xyz/scout (which reads /stats.json). */
+// Rough prices, for estimates on the stats pages (the bills are the real figures).
+const PRICES = {
+  chirpGBP: 22.55, wavenetGBP: 12.03,                   // per million characters past the free million
+  geminiFlashUSD: 15, geminiProUSD: 30,                  // per million characters, about ($10 / $20 per million audio tokens)
+  claudeInUSD: 0.10, claudeOutUSD: 0.50,                 // Claude Haiku 5.5 per million tokens; batch is half
+  usdPerGBP: 1.27,
+};
+
+/** The numbers, for /stats here and halopro.xyz/scout (which reads /stats.json). */
 async function gatherStats(env) {
-  const month = new Date().toISOString().slice(0, 7);
+  const now = new Date();
+  const month = now.toISOString().slice(0, 7);
   const updater = (await env.REQUESTS.get("file:stats-updater.json", "json")) || { months: {}, days: {} };
   const u = updater.months?.[month] || {};
   const get = async (k) => Number(await env.REQUESTS.get(`stat:${month}:${k}`)) || 0;
@@ -301,20 +327,49 @@ async function gatherStats(env) {
     const over = Math.max(0, chars - free);
     return { chars, free, over, costGBP: +(over / 1e6 * pricePerMillion).toFixed(2) };
   };
-  const chirp = allowance((u.chars_briefings || 0) + (u.chars_stories_ahead || 0), 22.55);
-  const wavenet = allowance(demandChars, 12.03);
+  const chirp = allowance((u.chars_briefings || 0) + (u.chars_stories_ahead || 0), PRICES.chirpGBP);
+  const wavenet = allowance(demandChars, PRICES.wavenetGBP);
+  const geminiFlash = { chars: u.chars_gemini_flash || 0 };
+  geminiFlash.costUSD = +(geminiFlash.chars / 1e6 * PRICES.geminiFlashUSD).toFixed(2);
+  const geminiPro = { chars: u.chars_gemini_pro || 0 };
+  geminiPro.costUSD = +(geminiPro.chars / 1e6 * PRICES.geminiProUSD).toFixed(2);
+  const claudeCost = (x) => +(((x.ai_in || 0) * PRICES.claudeInUSD + (x.ai_out || 0) * PRICES.claudeOutUSD
+    + ((x.ai_batch_in || 0) * PRICES.claudeInUSD + (x.ai_batch_out || 0) * PRICES.claudeOutUSD) / 2) / 1e6).toFixed(3);
+  const claude = { requests: u.ai_requests || 0, tokensIn: (u.ai_in || 0) + (u.ai_batch_in || 0), tokensOut: (u.ai_out || 0) + (u.ai_batch_out || 0), costUSD: claudeCost(u) };
+  const totalUSD = +(claude.costUSD + geminiFlash.costUSD + geminiPro.costUSD + (chirp.costGBP + wavenet.costGBP) * PRICES.usdPerGBP).toFixed(2);
+
+  // the last 30 days: the updater's numbers and the service's own (plays, stories recorded on demand)
+  const dayKeys = [...Array(30)].map((_, k) => new Date(now.getTime() - k * 86400e3).toISOString().slice(0, 10));
+  const perDay = await Promise.all(dayKeys.map(async (day) => {
+    const [pb, ps, dc, ds] = await Promise.all(["plays_briefing", "plays_story", "chars_on_demand", "stories_recorded_on_demand"]
+      .map(async (k) => Number(await env.REQUESTS.get(`stat:${day}:${k}`)) || 0));
+    const x = updater.days?.[day] || {};
+    return {
+      day, runs: x.runs || 0, added: x.stories_added || 0, merged: x.stories_merged || 0, aiRequests: x.ai_requests || 0,
+      aiCostUSD: claudeCost(x),
+      written: { Tech: x.written_tech || 0, Finance: x.written_finance || 0, World: x.written_world || 0, Fashion: x.written_fashion || 0 },
+      paywalled: { checked: x.paywalled_checked || 0, found: x.paywalled_found || 0, pictures: x.paywalled_pictures || 0, rewritten: x.paywalled_rewritten || 0 },
+      chars: (x.chars_briefings || 0) + (x.chars_stories_ahead || 0),
+      voice: { chirp: (x.chars_briefings || 0) + (x.chars_stories_ahead || 0), wavenet: dc, elevenlabs: x.chars_elevenlabs || 0,
+        geminiFlash: x.chars_gemini_flash || 0, geminiPro: x.chars_gemini_pro || 0 },
+      plays: { briefings: pb, stories: ps }, storiesOnDemand: ds,
+    };
+  }));
+
   return {
-    month, updated: updater.updated || null,
+    month, updated: updater.updated || null, prices: PRICES, estimatedCostUSD: totalUSD,
     voice: { chirp, wavenet, costGBP: +(chirp.costGBP + wavenet.costGBP).toFixed(2),
       briefings: { chars: u.chars_briefings || 0, recordings: u.briefings_recorded || 0 },
       storiesAhead: { chars: u.chars_stories_ahead || 0, stories: u.stories_recorded_ahead || 0 },
       onDemand: { chars: demandChars, stories: demandStories, dailyCap: DAILY_STORY_CHARS },
-      elevenlabs: { chars: u.chars_elevenlabs || 0 },
-      gemini: { flash: u.chars_gemini_flash || 0, pro: u.chars_gemini_pro || 0 } },
+      elevenlabs: { chars: u.chars_elevenlabs || 0, creditsApprox: Math.round((u.chars_elevenlabs || 0) * 0.5) },
+      gemini: { flash: geminiFlash.chars, pro: geminiPro.chars }, geminiFlash, geminiPro },
+    claude,
     plays: { briefings: briefingPlays, stories: storyPlays, top },
-    news: { runs: u.runs || 0, added: u.stories_added || 0, merged: u.stories_merged || 0, skipped: u.stories_skipped || 0, aiRequests: u.ai_requests || 0 },
-    days: Object.entries(updater.days || {}).slice(-14).reverse().map(([day, x]) => ({ day, runs: x.runs || 0, added: x.stories_added || 0,
-      aiRequests: x.ai_requests || 0, chars: (x.chars_briefings || 0) + (x.chars_stories_ahead || 0) })),
+    news: { runs: u.runs || 0, added: u.stories_added || 0, merged: u.stories_merged || 0, skipped: u.stories_skipped || 0, aiRequests: u.ai_requests || 0,
+      written: { Tech: u.written_tech || 0, Finance: u.written_finance || 0, World: u.written_world || 0, Fashion: u.written_fashion || 0 },
+      paywalled: { checked: u.paywalled_checked || 0, found: u.paywalled_found || 0, pictures: u.paywalled_pictures || 0, rewritten: u.paywalled_rewritten || 0 } },
+    days: perDay,
   };
 }
 
@@ -329,7 +384,7 @@ async function statsPage(env) {
   const meter = (name, a, note) => `<div class="card"><div class="l">${name}</div><div class="v">${fmt(a.chars)} <span class="of">of ${fmt(a.free)} free</span></div>
 <div class="bar"><i style="width:${Math.min(100, a.chars / a.free * 100).toFixed(1)}%"></i></div><div class="n">${a.over ? `About £${a.costGBP.toFixed(2)} over the free allowance` : `Inside the free allowance · ${fmt(a.free - a.chars)} left`} · ${note}</div></div>`;
   const v = d.voice;
-  const days = d.days.map((x) => `<tr><td>${x.day.slice(8)}/${x.day.slice(5, 7)}</td><td>${fmt(x.runs)}</td><td>${fmt(x.added)}</td><td>${fmt(x.aiRequests)}</td><td>${fmt(x.chars)}</td></tr>`).join("");
+  const days = d.days.slice(0, 14).map((x) => `<tr><td>${x.day.slice(8)}/${x.day.slice(5, 7)}</td><td>${fmt(x.runs)}</td><td>${fmt(x.added)}</td><td>${fmt(x.aiRequests)}</td><td>${fmt(x.chars)}</td></tr>`).join("");
   const month = new Date(d.month + "-01T00:00:00Z").toLocaleDateString("en-GB", { month: "long", year: "numeric", timeZone: "UTC" });
   const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Scout numbers</title>
 <style>${STATS_CSS}</style>

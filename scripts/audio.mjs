@@ -89,6 +89,14 @@ async function pickVoice(key, want) {
 }
 
 let spoken = 0;   // characters sent to Google this run, for the stats page
+/** This run's characters by voice ("Gemini 2.5 Flash · Iapetus"…) and their rough cost, for the stats page. */
+export const audioUsage = { byVoice: {}, costUSD: 0 };
+const PER_MILLION_USD = { gemini: 15, chirp: 0, wavenet: 0, standard: 0, elevenlabs: 0 };   // Google's free millions cover Chirp/WaveNet/Standard here
+function countVoice(label, kind, chars) {
+  audioUsage.byVoice[label] = (audioUsage.byVoice[label] || 0) + chars;
+  audioUsage.costUSD = +(audioUsage.costUSD + chars / 1e6 * (PER_MILLION_USD[kind] || 0)).toFixed(4);
+}
+const voiceLabel = (name) => name.replace(/^en-GB-/, '').replace(/^Chirp3-HD-/, 'Chirp 3: HD · ').replace(/^Wavenet-/, 'WaveNet · ').replace(/^Standard-/, 'Standard · ');
 let elevenChars = 0;   // characters sent to ElevenLabs this run
 
 // ElevenLabs reads the Tech and World briefings (and their openings) when its key is set; the
@@ -166,6 +174,7 @@ async function speakGemini(_googleKey, model, text, voiceName = GEMINI_VOICE) {
   }
   const mp3 = await toMp3(Buffer.concat(pcm));
   geminiChars[/pro/.test(model) ? 'pro' : 'flash'] += plain.length;
+  countVoice(`${/pro/.test(model) ? 'Gemini 2.5 Pro' : 'Gemini 2.5 Flash'} · ${voiceName}`, 'gemini', plain.length);
   return mp3;
 }
 
@@ -207,6 +216,7 @@ async function speakEleven(text, sec = '') {
   });
   if (!r.ok) throw new Error(`ElevenLabs answered ${r.status}: ${(await r.text()).slice(0, 200)}`);
   elevenChars += plain.length;
+  countVoice(`ElevenLabs ${/flash/.test(model) ? 'Flash' : 'Multilingual'} · ${voice === ELEVEN_VOICE ? 'Alice' : voice}`, 'elevenlabs', plain.length);
   return Buffer.from(await r.arrayBuffer());
 }
 
@@ -235,6 +245,7 @@ const HOLD_VERSION = 4;
 
 async function speak(key, voice, text) {
   spoken += text.length;
+  countVoice(voiceLabel(voice), /Chirp3/.test(voice) ? 'chirp' : /Wavenet/.test(voice) ? 'wavenet' : 'standard', text.length);
   // lines with [pause] marks go as markup (Chirp 3: HD); if that's refused, as plain text
   const markup = /\[pause/.test(text);
   const send = (input) => fetch(`${API}/text:synthesize?key=${key}`, {
@@ -356,7 +367,8 @@ export async function makeAudio(briefing, log = console.log, news = null) {
     }
   }
   if (made || storiesMade) await publishFile('audio.json', index);
-  await addStats({ chars_briefings: briefingChars, chars_stories_ahead: spoken - briefingChars, stories_recorded_ahead: storiesMade, briefings_recorded: made, chars_elevenlabs: elevenChars,
+  await addStats({ ...Object.fromEntries(Object.entries(audioUsage.byVoice).map(([k, v]) => [`voice:${k}`, v])), voice_cost_usd: audioUsage.costUSD,
+    chars_briefings: briefingChars, chars_stories_ahead: spoken - briefingChars, stories_recorded_ahead: storiesMade, briefings_recorded: made, chars_elevenlabs: elevenChars,
     chars_gemini_flash: geminiChars.flash, chars_gemini_pro: geminiChars.pro });
   const byEleven = Object.entries(index.sections).filter(([, v]) => v.files?.chirp?.engine === 'elevenlabs').map(([k]) => k);
   const byGemini = Object.entries(index.sections).filter(([, v]) => /gemini/.test(v.files?.chirp?.engine || '')).map(([k, v]) => `${k} (${v.files.chirp.engine})`);

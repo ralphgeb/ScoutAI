@@ -36,7 +36,8 @@ const MAX_SEEN = 8000;         // how many article links to remember
 const ARTICLE_CHARS = 6000;    // how much of each article the AI reads
 const UPGRADE_MAX = 20;        // older stories per run that get key points added
 // Share of each run's full analyses per section, so no section crowds out the others.
-const SECTION_SHARE = { Tech: 0.25, Finance: 0.25, World: 0.25, Fashion: 0.25 };
+// Design (architecture, interiors, product design) only feeds For you, never a briefing.
+const SECTION_SHARE = { Design: 0.06, Tech: 0.235, Finance: 0.235, World: 0.235, Fashion: 0.235 };
 // Sources that never appear in the app.
 // Outlets left out of the app. Indian outlets are left out at the editor's request.
 const BLOCKED = /cnbc|the hindu\b|thehindu|hindustan times|hindustantimes|times of india|timesofindia|indiatimes|economic times|ndtv|livemint|\bmint\b|business standard|news18|india today|indiatoday|deccan|the print\b|theprint|firstpost|moneycontrol/i;
@@ -71,7 +72,7 @@ export const TOPICS = [
   'Banks & Finance', 'Deals & Mergers', 'Policy & Regulation', 'Energy', 'Cars', 'Space',
   'Science', 'Health & Biotech', 'Retail', 'Telecoms', 'UK business',
   'World politics', 'Conflict & security', 'Elections', 'Trade & tariffs', 'Central banks',
-  'Commodities', 'Climate', 'Fashion & Luxury', 'Beauty', 'Designers & Shows', 'Other'
+  'Commodities', 'Climate', 'Fashion & Luxury', 'Beauty', 'Designers & Shows', 'Architecture', 'Design', 'Other'
 ];
 
 // Where a story mainly happens, so the app can follow the UK, the US, Europe or Asia.
@@ -92,13 +93,16 @@ export const REPUTABLE = new RegExp('^(the )?(' + [
   'Al Jazeera', 'The National', 'Gulf News', 'Khaleej Times', 'Arab News', 'Al Arabiya', 'Asharq Al-Awsat', 'Semafor', 'NPR', 'South China Morning Post', 'Nikkei Asia', 'Straits Times', 
   'Japan Times', 'Kyodo', 'Yonhap', 'Korea Herald', 'Korea JoongAng Daily',
   'CNA(?=$)', 'Channel NewsAsia', 'ABC \\(Australia\\)', 'ABC News \\(Australia\\)', 'Sydney Morning Herald', 'Caixin',
-  'Business of Fashion', 'Vogue Business', 'Vogue(?=$)', 'WWD', 'Variety', 'Hollywood Reporter', 'CoinDesk', 'Nature(?=$)', 'Science(?=$)'
+  'Business of Fashion', 'Vogue Business', 'Vogue(?=$)', 'WWD',
+  'Dezeen', 'ArchDaily', 'Architects\' Journal', 'The Architects\' Journal', 'Architectural Record', 'Architectural Digest', 'Monocle', 'Dwell', 'designboom', 'Wallpaper\\*?', 'Domus', 'Icon(?=$)', 'Disegno', 'Fast Company', 'Core77', 'Building Design', 'RIBA Journal', 'Architect Magazine', 'Frame(?=$)', 'Azure(?=$)', 'Variety', 'Hollywood Reporter', 'CoinDesk', 'Nature(?=$)', 'Science(?=$)'
 ].join('|') + ')( |$|:|,)', 'i');
 
 export const normRegion = (r) => REGIONS.find((x) => x.toLowerCase() === String(r || '').toLowerCase()) || 'Global';
 
 // Sections in the app's News tab. Older data used finer sections.
-export const normSection = (s) => (/^(markets|finance)$/i.test(s || '') ? 'Finance' : /^world$/i.test(s || '') ? 'World' : /^fashion$/i.test(s || '') ? 'Fashion' : 'Tech');
+export const normSection = (s) => (/^(markets|finance)$/i.test(s || '') ? 'Finance' : /^world$/i.test(s || '') ? 'World' : /^fashion$/i.test(s || '') ? 'Fashion' : /^design$/i.test(s || '') ? 'Design' : 'Tech');
+// Sections whose sites publish less often, so the updater looks further back.
+const SLOW_SECTION = (sec) => sec === 'Fashion' || sec === 'Design';
 const sourceEntry = (a) => ({ name: a.source, title: a.title, link: a.link, published: a.published, image: a.image || '' });
 const chunk = (arr, n) => Array.from({ length: Math.ceil(arr.length / n) }, (_, i) => arr.slice(i * n, i * n + n));
 async function runParallel(items, limit, fn) {
@@ -211,7 +215,7 @@ export async function collect(feeds, seen) {
   for (const a of all) {
     if (BLOCKED.test(a.source) || BLOCKED.test(a.link)) continue;
     if (seenSet.has(a.link) || unique.has(a.link)) continue;
-    if (new Date(a.published).getTime() < (a.section === 'Fashion' ? fashionCutoff : cutoff)) continue;
+    if (new Date(a.published).getTime() < (SLOW_SECTION(a.section) ? fashionCutoff : cutoff)) continue;
     unique.set(a.link, a);
   }
   return fairOrder([...unique.values()].sort((a, b) => b.published.localeCompare(a.published)));
@@ -255,7 +259,7 @@ const STALE_DAYS = 3;
 function isStale(a) {
   if (!a.pagePublished) return false;
   const page = Date.parse(a.pagePublished);
-  const limit = (a.section === 'Fashion' ? FASHION_AGE_H / 24 + 1 : STALE_DAYS) * 864e5;
+  const limit = (SLOW_SECTION(a.section) ? FASHION_AGE_H / 24 + 1 : STALE_DAYS) * 864e5;
   return Date.now() - page > limit;
 }
 
@@ -593,6 +597,7 @@ Estimating likelihood (be calibrated, not dramatic):
 
 Finance news is for professionals (bankers, investors, analysts): give the deal size, the advisers or buyers if named, the valuation, the move in the share price, bond yield or currency, and what the market expects next. Score importance higher for deals, big-company earnings, central-bank decisions, market-moving data and rates, bonds, FX and commodities; lower for broad explainers, opinion, and personal-finance advice (mortgage tips, savings accounts, pensions advice), which are usually not kept.
 
+Architecture and design news (from architecture and design sites): cover the building, interior, object or designer and why it matters; tag it with the topic Architecture (buildings, architects, cities, interiors) and/or Design (product, industrial, furniture and graphic design); usually no stocks.
 Fashion news: cover the designers, brands, collections and business angle; luxury groups and retailers (e.g. LVMH MC.PA, Kering KER.PA, Hermès RMS.PA, Richemont CFR.SW, Prada 1913.HK, Burberry BRBY.L, Inditex ITX.MC, Moncler MONC.MI) are the usual stocks. Celebrity and red-carpet style stories usually move no stocks.
 
 World and political news: say plainly what happened and, where relevant, how it could affect markets (indices, currencies, commodities, sectors). Unconfirmed reports of market-moving decisions are rumours.
@@ -923,7 +928,8 @@ export function mergeBatch(stories, batch, analyses, now = new Date().toISOStrin
       const story = {
         id: idFor(art.link),
         headline: art.title,
-        section: normSection(['Tech', 'Finance', 'World', 'Fashion'].includes(an.section) ? an.section : art.section),
+        // stories from the architecture and design sites stay in Design (For you only, no briefing)
+        section: art.section === 'Design' ? 'Design' : normSection(['Tech', 'Finance', 'World', 'Fashion'].includes(an.section) ? an.section : art.section),
         image: art.image || '',
         image_checked: true,
         ...clean,
@@ -932,6 +938,9 @@ export function mergeBatch(stories, batch, analyses, now = new Date().toISOStrin
         first_published: art.published,
         last_updated: now
       };
+      if (story.section === 'Design' && !(story.topics || []).some((t) => t === 'Architecture' || t === 'Design')) {
+        story.topics = [...(story.topics || []).filter((t) => t !== 'Other'), 'Design'];
+      }
       if (byId.has(story.id)) continue;
       byId.set(story.id, story);
       stories.push(story);

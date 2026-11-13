@@ -182,5 +182,18 @@
   {"name": "CNN US politics (via Google News)", "section": "World", "url": "https://news.google.com/rss/search?q=site:cnn.com/politics+when:1d&hl=en-US&gl=US&ceid=US:en", "region": "US"},
   {"name": "Forbes (via Google News)", "section": "World", "url": "https://news.google.com/rss/search?q=site:forbes.com+(politics+OR+%22White+House%22+OR+tariffs+OR+economy)+when:1d&hl=en-US&gl=US&ceid=US:en", "region": "US"},
   {"name": "WWD business (via Google News)", "section": "Fashion", "url": "https://news.google.com/rss/search?q=site:wwd.com+(business+OR+earnings+OR+%22chief+executive%22+OR+appoints+OR+acquisition)+when:2d&hl=en-GB&gl=GB&ceid=GB:en", "region": "Global"},
-  {"name": "Business of Fashion news (via Google News)", "section": "Fashion", "url": "https://news.google.com/rss/search?q=site:businessoffashion.com+(news+OR+luxury+OR+appoints+OR+sales)+when:2d&hl=en-GB&gl=GB&ceid=GB:en", "region": "Global"}
+  {"name": "Business of Fashion news (via Google News)", "section": "Fashion", "url": "https://news.google.com/rss/search?q=site:businessoffashion.com+(news+OR+luxury+OR+appoints+OR+sales)+when:2d&hl=en-GB&gl=GB&ceid=GB:en", "region": "Global"},
+  {"name": "Dezeen", "section": "Design", "url": "https://www.dezeen.com/feed/", "region": "UK"},
+  {"name": "ArchDaily", "section": "Design", "url": "https://feeds.feedburner.com/Archdaily", "region": "Global"},
+  {"name": "designboom", "section": "Design", "url": "https://www.designboom.com/feed/", "region": "Global"},
+  {"name": "Architectural Digest", "section": "Design", "url": "https://www.architecturaldigest.com/feed/rss", "region": "US"},
+  {"name": "Yanko Design", "section": "Design", "url": "https://www.yankodesign.com/feed/", "region": "Global"},
+  {"name": "Architects' Journal (via Google News)", "section": "Design", "url": "https://news.google.com/rss/search?q=site:architectsjournal.co.uk+when:3d&hl=en-GB&gl=GB&ceid=GB:en", "region": "UK"},
+  {"name": "Monocle (via Google News)", "section": "Design", "url": "https://news.google.com/rss/search?q=site:monocle.com+(design+OR+architecture+OR+urbanism)+when:3d&hl=en-GB&gl=GB&ceid=GB:en", "region": "Global"},
+  {"name": "Dwell (via Google News)", "section": "Design", "url": "https://news.google.com/rss/search?q=site:dwell.com+when:3d&hl=en-GB&gl=GB&ceid=GB:en", "region": "US"},
+  {"name": "Wallpaper* (via Google News)", "section": "Design", "url": "https://news.google.com/rss/search?q=site:wallpaper.com+when:3d&hl=en-GB&gl=GB&ceid=GB:en", "region": "UK"},
+  {"name": "Architectural Record (via Google News)", "section": "Design", "url": "https://news.google.com/rss/search?q=site:architecturalrecord.com+when:3d&hl=en-GB&gl=GB&ceid=GB:en", "region": "US"},
+  {"name": "Fast Company Design (via Google News)", "section": "Design", "url": "https://news.google.com/rss/search?q=site:fastcompany.com+design+when:3d&hl=en-GB&gl=GB&ceid=GB:en", "region": "US"},
+  {"name": "Disegno (via Google News)", "section": "Design", "url": "https://news.google.com/rss/search?q=site:disegnojournal.com+when:3d&hl=en-GB&gl=GB&ceid=GB:en", "region": "UK"},
+  {"name": "Core77 (via Google News)", "section": "Design", "url": "https://news.google.com/rss/search?q=site:core77.com+when:3d&hl=en-GB&gl=GB&ceid=GB:en", "region": "US"}
 ]

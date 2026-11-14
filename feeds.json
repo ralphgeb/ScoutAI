@@ -189,11 +189,10 @@
   {"name": "Architectural Digest", "section": "Design", "url": "https://www.architecturaldigest.com/feed/rss", "region": "US"},
   {"name": "Yanko Design", "section": "Design", "url": "https://www.yankodesign.com/feed/", "region": "Global"},
   {"name": "Architects' Journal (via Google News)", "section": "Design", "url": "https://news.google.com/rss/search?q=site:architectsjournal.co.uk+when:3d&hl=en-GB&gl=GB&ceid=GB:en", "region": "UK"},
-  {"name": "Monocle (via Google News)", "section": "Design", "url": "https://news.google.com/rss/search?q=site:monocle.com+(design+OR+architecture+OR+urbanism)+when:3d&hl=en-GB&gl=GB&ceid=GB:en", "region": "Global"},
+  {"name": "Monocle (via Google News)", "section": "Design", "url": "https://news.google.com/rss/search?q=site:monocle.com+when:3d&hl=en-GB&gl=GB&ceid=GB:en", "region": "Global"},
   {"name": "Dwell (via Google News)", "section": "Design", "url": "https://news.google.com/rss/search?q=site:dwell.com+when:3d&hl=en-GB&gl=GB&ceid=GB:en", "region": "US"},
   {"name": "Wallpaper* (via Google News)", "section": "Design", "url": "https://news.google.com/rss/search?q=site:wallpaper.com+when:3d&hl=en-GB&gl=GB&ceid=GB:en", "region": "UK"},
   {"name": "Architectural Record (via Google News)", "section": "Design", "url": "https://news.google.com/rss/search?q=site:architecturalrecord.com+when:3d&hl=en-GB&gl=GB&ceid=GB:en", "region": "US"},
-  {"name": "Fast Company Design (via Google News)", "section": "Design", "url": "https://news.google.com/rss/search?q=site:fastcompany.com+design+when:3d&hl=en-GB&gl=GB&ceid=GB:en", "region": "US"},
   {"name": "Disegno (via Google News)", "section": "Design", "url": "https://news.google.com/rss/search?q=site:disegnojournal.com+when:3d&hl=en-GB&gl=GB&ceid=GB:en", "region": "UK"},
   {"name": "Core77 (via Google News)", "section": "Design", "url": "https://news.google.com/rss/search?q=site:core77.com+when:3d&hl=en-GB&gl=GB&ceid=GB:en", "region": "US"}
 ]

@@ -1340,26 +1340,147 @@ const BRIEFING_TOOL = {
 
 const londonHour = (d = new Date()) => Number(new Intl.DateTimeFormat('en-GB', { hour: 'numeric', hourCycle: 'h23', timeZone: 'Europe/London' }).format(d));
 
-export async function makeBriefing(stories, apiKey, now = new Date()) {
+// ---------- The editor-in-chief ----------
+// Over everyone else, once a run: looks at what Google News leads with in the UK and the US right
+// now, at what Scout led with on the last few days, and at the stories we have. It re-rates how
+// important stories are by what's NEW today (a long-running story piles up outlets day after day,
+// which is not the same as being today's news), moves a story filed in the wrong section, and
+// picks the front page for the morning briefing.
+const PULSE_FEEDS = [
+  { name: 'Google News UK', section: 'World', region: 'UK', url: 'https://news.google.com/rss?hl=en-GB&gl=GB&ceid=GB:en' },
+  { name: 'Google News US', section: 'World', region: 'US', url: 'https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en' },
+  { name: 'Google News UK business', section: 'Finance', region: 'UK', url: 'https://news.google.com/rss/headlines/section/topic/BUSINESS?hl=en-GB&gl=GB&ceid=GB:en' },
+  { name: 'Google News US technology', section: 'Tech', region: 'US', url: 'https://news.google.com/rss/headlines/section/topic/TECHNOLOGY?hl=en-US&gl=US&ceid=US:en' }
+];
+const FRONT_SECTIONS = new Set(['Tech', 'Finance', 'World']);
+
+/** What everyone is reading about right now: the Google News front pages' headlines. */
+export async function newsPulse() {
+  const out = [];
+  const seenTitles = new Set();
+  const lists = await Promise.allSettled(PULSE_FEEDS.map((f) => fetchFeed({ ...f, url: f.url })));
+  lists.forEach((r, i) => {
+    if (r.status !== 'fulfilled') { log(`${PULSE_FEEDS[i].name} (front page): failed`); return; }
+    for (const a of r.value.slice(0, 25)) {
+      const key = a.title.toLowerCase().slice(0, 60);
+      if (seenTitles.has(key)) continue;
+      seenTitles.add(key);
+      out.push({ where: PULSE_FEEDS[i].name, title: a.title, source: a.source });
+    }
+  });
+  return out.slice(0, 80);
+}
+
+const pulseWords = (t) => new Set((String(t || '').toLowerCase().match(/[a-z0-9]{4,}/g) || []).filter((w) => !STOP_EIC.has(w)));
+const STOP_EIC = new Set(['after', 'about', 'with', 'from', 'that', 'this', 'what', 'will', 'says', 'said', 'over', 'into', 'their', 'have', 'more', 'than', 'amid', 'news', 'live', 'updates', 'latest', 'could', 'would', 'year', 'first']);
+
+/** What Scout led with on the last few days (newest first). */
+function pastFronts(briefing, stories) {
+  const byId = new Map(stories.map((s) => [s.id, s]));
+  return (briefing.editions || []).slice(0, 4).map((e) => {
+    const tops = (e.top_stories || []).slice(0, 5).map((t) => t.title || byId.get(t.story_id)?.headline).filter(Boolean);
+    return `${(e.generated || '').slice(0, 10)} ${e.edition || ''}: "${e.title}"\n   front page: ${tops.join(' / ')}`;
+  }).join('\n') || '(none yet)';
+}
+
+const EIC_TOOL = {
+  name: 'record_front_page',
+  description: "The editor-in-chief's decisions for this morning.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      front_page: { type: 'array', items: { type: 'string' }, description: "Story ids for today's front page, most important first, 6 to 8: the biggest NEW events of the last 24 hours across tech, business and markets, and the world. No more than two on the same subject." },
+      importance: {
+        type: 'array',
+        description: 'Stories whose importance (1-10) should change, up to 40. 10 = the day\'s defining event; 8-9 = a front-page story everyone is talking about; 6-7 = notable; lower = routine. A story that led on earlier days with no big new development today comes down; a big new event that the Google News front pages lead with goes up.',
+        items: { type: 'object', properties: { story_id: { type: 'string' }, importance: { type: 'integer' } }, required: ['story_id', 'importance'] }
+      },
+      section_fixes: {
+        type: 'array',
+        description: 'Stories filed in the wrong section, up to 10 (e.g. a nationwide flight ground stop filed under Finance belongs in World).',
+        items: { type: 'object', properties: { story_id: { type: 'string' }, section: { type: 'string', enum: ['Tech', 'Finance', 'World'] } }, required: ['story_id', 'section'] }
+      },
+      missing: { type: 'array', items: { type: 'string' }, description: 'Big events leading the Google News front pages that none of our stories cover (short descriptions), so they can be logged.' }
+    },
+    required: ['front_page', 'importance', 'section_fixes', 'missing']
+  }
+};
+
+const EIC_SYSTEM = `You are the editor-in-chief of Scout, a news app for busy readers in the UK and the US covering tech, business and markets, and world news. Your section editors have filed and combined today's stories; you decide what today's news really is.
+How to judge:
+- What is NEW in the last 24 hours matters most. A story that has run for days collects hundreds of outlets; that volume is not today's importance. If it led the last days and nothing big happened in it today, it moves down the front page (it can stay on it if it is still major).
+- The Google News front pages show what everyone is reading right now. Every big event leading them that one of our stories covers belongs on the front page or at least at importance 8+, whatever section it was filed in. Nationwide disruptions (air traffic, power, telecoms or cloud outages hitting millions), disasters, major political events and big market moves are front-page news.
+- A balanced front page: no more than two stories on the same subject, and a mix of world, business and tech when the news allows.
+- Only use story ids from the list. Call record_front_page once.`;
+
+export async function editorInChief(stories, briefing, apiKey, now = new Date()) {
+  const since = new Date(now.getTime() - 30 * 3600e3).toISOString();
+  const pub = (s) => s.first_published || s.first_seen || '';
+  const recent = stories.filter((s) => FRONT_SECTIONS.has(normSection(s.section)) && (pub(s) >= since || (s.last_updated || '') >= since));
+  if (recent.length < 5) return null;
+  let pulse = [];
+  try { pulse = await newsPulse(); } catch (e) { log(`Google News front pages failed: ${e.message}`); }
+  // the most important stories, the most covered ones, and any that match a Google News headline
+  const byImportance = [...recent].sort((a, b) => (b.importance || 0) - (a.importance || 0) || (b.sources?.length || 0) - (a.sources?.length || 0));
+  const pick = new Map(byImportance.slice(0, 60).map((s) => [s.id, s]));
+  for (const p of pulse) {
+    const pw = pulseWords(p.title);
+    const best = recent.map((s) => ({ s, n: [...pulseWords(s.headline || s.claim)].filter((w) => pw.has(w)).length }))
+      .filter((x) => x.n >= 2).sort((a, b) => b.n - a.n || (b.s.sources?.length || 0) - (a.s.sources?.length || 0))[0];
+    if (best && pick.size < 100) pick.set(best.s.id, best.s);
+  }
+  const pool = [...pick.values()];
+  const ids = new Set(pool.map((s) => s.id));
+  const list = pool.map((s) => `${s.id} | ${normSection(s.section)} | importance ${s.importance ?? '?'} | ${s.sources?.length || 1} outlet(s) | first seen ${pub(s).slice(0, 16)} | updated ${(s.last_updated || '').slice(0, 16)} | ${s.headline || s.claim}\n   ${trim(s.summary, 300)}`).join('\n');
+  const pulseText = pulse.length ? pulse.map((p) => `[${p.where}] ${p.title} (${p.source})`).join('\n') : '(unavailable this run)';
+  const x = await callClaude({
+    model: BRIEFING_MODEL, max_tokens: 3000,
+    system: EIC_SYSTEM,
+    tools: [EIC_TOOL], tool_choice: { type: 'tool', name: 'record_front_page' },
+    messages: [{ role: 'user', content: `It is ${now.toISOString().slice(0, 16)} UTC.\n\nWhat Scout led with on earlier days:\n${pastFronts(briefing, stories)}\n\nGoogle News front pages right now:\n${pulseText}\n\nOur stories from the last 30 hours (id | section | importance | outlets | first seen | updated | headline, then summary):\n${list}` }]
+  }, apiKey);
+  let changed = 0, moved = 0;
+  const byId = new Map(stories.map((s) => [s.id, s]));
+  for (const c of x.importance || []) {
+    const s = ids.has(c.story_id) && byId.get(c.story_id);
+    const v = Math.max(1, Math.min(10, Math.round(Number(c.importance))));
+    if (s && Number.isFinite(v) && s.importance !== v) { s.importance = v; changed++; }
+  }
+  for (const f of x.section_fixes || []) {
+    const s = ids.has(f.story_id) && byId.get(f.story_id);
+    if (s && FRONT_SECTIONS.has(f.section) && s.section !== f.section) { s.section = f.section; moved++; }
+  }
+  const front = [...new Set((x.front_page || []).filter((id) => ids.has(id)))].slice(0, 8);
+  // the front page goes to the top of the order, in the editor-in-chief's order
+  front.forEach((id, i) => { const s = byId.get(id); if (s) s.importance = Math.max(s.importance || 0, i === 0 ? 10 : i < 3 ? 9 : 8); });
+  briefing.front = { generated: now.toISOString(), story_ids: front, missing: (x.missing || []).slice(0, 10).map((m) => trim(m, 160)), pulse: pulse.length };
+  log(`Editor-in-chief: front page of ${front.length}, ${changed} importance scores changed, ${moved} stories moved section; ${pulse.length} Google News headlines read${(x.missing || []).length ? `; not covered: ${(x.missing || []).slice(0, 4).join('; ')}` : ''}.`);
+  return front;
+}
+
+export async function makeBriefing(stories, apiKey, now = new Date(), front = [], previous = '') {
   const edition = londonHour(now) < 12 ? 'Morning' : 'Evening';
   const since = new Date(now.getTime() - 16 * 3600e3).toISOString();
   const pub = (s) => s.first_published || s.first_seen || '';
-  const score = (s) => (s.sources?.length || 1) * 2 + (IMPACT_RANK[s.overall_impact] || 0) * 2 + (s.status === 'rumour' ? 1 : 0) + (s.status === 'confirmed' ? 2 : 0);
-  const pool = stories.filter((s) => normSection(s.section) === 'Tech')
+  const score = (s) => (s.importance || 0) * 3 + Math.min(s.sources?.length || 1, 20) + (IMPACT_RANK[s.overall_impact] || 0) * 2 + (s.status === 'confirmed' ? 2 : 0);
+  // the front page: tech, business and markets, and the world (the editor-in-chief's picks first)
+  const byId = new Map(stories.map((s) => [s.id, s]));
+  const chosen = front.map((id) => byId.get(id)).filter(Boolean);
+  const pool = [...chosen, ...stories.filter((s) => FRONT_SECTIONS.has(normSection(s.section)) && !front.includes(s.id))
     .filter((s) => pub(s) >= since || (s.last_updated || '') >= since)
-    .sort((a, b) => score(b) - score(a))
+    .sort((a, b) => score(b) - score(a))]
     .slice(0, 90);
   if (pool.length < 3) { log('Not enough recent stories for a briefing yet.'); return null; }
 
-  const list = pool.map((s) => `${s.id} | ${s.status}${s.likelihood != null && s.status === 'rumour' ? ' ' + s.likelihood + '%' : ''} | ${s.sources.length} outlet(s) | impact ${s.overall_impact} | ${s.section} | ${s.headline || s.claim}\n   ${s.summary}${(s.stocks || []).length ? '\n   Stocks: ' + s.stocks.map((k) => `${k.ticker} ${k.direction}`).join(', ') : ''}`).join('\n');
+  const list = pool.map((s) => `${front.includes(s.id) ? 'FRONT ' + (front.indexOf(s.id) + 1) + ' | ' : ''}${s.id} | ${s.status}${s.likelihood != null && s.status === 'rumour' ? ' ' + s.likelihood + '%' : ''} | ${s.sources.length} outlet(s) | impact ${s.overall_impact} | ${s.section} | ${s.headline || s.claim}\n   ${s.summary}${(s.stocks || []).length ? '\n   Stocks: ' + s.stocks.map((k) => `${k.ticker} ${k.direction}`).join(', ') : ''}`).join('\n');
 
   const input = await callClaude({
     model: BRIEFING_MODEL,
     max_tokens: 4000,
-    system: `You are the editor of "Rumour Radar", a daily morning TECH briefing (tech, AI, gadgets, big tech companies, startups and VC, and tech stocks). Write the ${edition.toLowerCase()} briefing covering the last 24 hours for a busy reader. Pick what genuinely matters (big launches, deals, earnings, regulation, AI breakthroughs, market moves, credible rumours), not minor product reviews. Use only story ids from the list. Be neutral, clear, British English, in your own words. Call record_briefing once.`,
+    system: `You are the front-page editor of Scout, a news app for busy readers in the UK and the US. Write the ${edition.toLowerCase()} briefing: the day's biggest news across the world, business and markets, and tech, over the last 24 hours. The editor-in-chief has chosen the front page (the stories marked FRONT, in order): lead with the first and keep their order for top_stories unless two are the same event. The title names today's main news; when one story has led for days, say what is new in it, and give the other big events of the day their place too. Use only story ids from the list. Be neutral, clear, British English, in your own words. Call record_briefing once.`,
     tools: [BRIEFING_TOOL],
     tool_choice: { type: 'tool', name: 'record_briefing' },
-    messages: [{ role: 'user', content: `Stories (id | status | outlets | impact | section | headline, then summary):\n${list}` }]
+    messages: [{ role: 'user', content: `${previous ? `What Scout led with on earlier days (don't repeat yourself):\n${previous}\n\n` : ''}Stories (id | status | outlets | impact | section | headline, then summary; FRONT = on the editor-in-chief's front page):\n${list}` }]
   }, apiKey);
 
   const ids = new Set(pool.map((s) => s.id));
@@ -1822,7 +1943,7 @@ const SECTION_FOCUS = {
   Fashion: 'luxury and high fashion: luxury houses and groups, major designers and creative directors, the big fashion weeks, and the business of luxury'
 };
 
-export async function makeSectionBriefs(stories, apiKey, now = new Date()) {
+export async function makeSectionBriefs(stories, apiKey, now = new Date(), before = {}) {
   const since = new Date(now.getTime() - 26 * 3600e3).toISOString();
   const score = (s) => (s.sources?.length || 1) * 2 + (IMPACT_RANK[s.overall_impact] || 0) * 2 + (s.image ? 1 : 0);
   const out = {};
@@ -1837,7 +1958,7 @@ export async function makeSectionBriefs(stories, apiKey, now = new Date()) {
     try {
       const x = await callClaude({
         model: BRIEFING_MODEL, max_tokens: 3500,
-        system: `You are the ${sec} editor of a news app read in the UK, the US, Europe and Asia. Using only the stories given, say what the main topic in ${SECTION_FOCUS[sec]} is right now and summarise what is happening. ${global ? 'Cover every region, in this order of weight: the US, the UK, Europe, Asia. Give each region with real news its own highlight, labelled with the region, and spread the points across regions. ' : ''}Neutral, British English, your own words. Call record_section_brief once.`,
+        system: `You are the ${sec} editor of a news app read in the UK, the US, Europe and Asia. Using only the stories given, say what the main topic in ${SECTION_FOCUS[sec]} is right now and summarise what is happening. ${global ? 'Cover every region, in this order of weight: the US, the UK, Europe, Asia. Give each region with real news its own highlight, labelled with the region, and spread the points across regions. ' : ''}Lead with the biggest NEW story of the last 24 hours in this section; a story that mainly belongs to another section (a company's boardroom drama in World, say) leads only if it truly is this section's biggest news. ${before[sec] ? `Your last briefing led with "${before[sec]}": lead with it again only if something big happened in it since; otherwise lead with something else and mention it briefly. ` : ''}Neutral, British English, your own words. Call record_section_brief once.`,
         tools: [SECTION_TOOL], tool_choice: { type: 'tool', name: 'record_section_brief' },
         messages: [{ role: 'user', content: pool.map((s) => `${s.id} | ${s.region || 'Global'} | ${s.sources.length} outlet(s) | ${s.status} | ${s.headline || s.claim}\n   ${s.summary}${(s.stocks || []).length ? '\n   Stocks: ' + s.stocks.map((k) => `${k.ticker} ${k.direction}`).join(', ') : ''}`).join('\n') }]
       }, apiKey);
@@ -1973,6 +2094,33 @@ export async function main() {
     log(await publishFile('news.json', news) && await publishFile('briefing.json', briefing) ? 'Edited stories published.' : 'Edited stories not published.');
     return;
   }
+  if (MODE === 'editor') {   // the editor-in-chief again on today's stories: new front page and briefings (no new news)
+    const news = await readJSON(NEWS_FILE, { stories: [] });
+    // today's briefing is the one being redone, so it isn't one of the "earlier days"
+    const today = new Date().toISOString().slice(0, 10);
+    const earlier = { ...briefing, editions: (briefing.editions || []).filter((e) => !(e.generated || '').startsWith(today)) };
+    const lastLeads = Object.fromEntries(Object.entries(briefing.sections || {}).map(([k, v]) => [k, v?.title]).filter(([, t]) => t));
+    const front = (await editorInChief(news.stories, earlier, apiKey)) || [];
+    briefing.front = earlier.front;
+    const b = await makeBriefing(news.stories, apiKey, new Date(), front, pastFronts(earlier, news.stories));
+    if (b) {
+      briefing.editions = [b, ...earlier.editions].slice(0, 6);
+      log(`${b.edition} briefing rewritten: "${b.title}"`);
+    }
+    const secs = await makeSectionBriefs(news.stories, apiKey, new Date(), lastLeads);
+    briefing.sections = { ...(briefing.sections || {}), ...secs };
+    const edition = londonHour() < 12 ? 'Morning' : 'Evening';
+    if (Object.keys(secs).length) briefing.section_editions = { ...(briefing.section_editions || {}), [edition]: secs };
+    remapBriefing(briefing, news.stories);
+    leadPictures(briefing, news.stories);
+    sectionCovers(briefing, news.stories);
+    briefing.updated = news.updated = new Date().toISOString();
+    await writeJSON(NEWS_FILE, news);
+    await writeJSON(BRIEFING_FILE, briefing);
+    log(await publishFile('news.json', news) && await publishFile('briefing.json', briefing) ? 'New front page published.' : 'New front page not published.');
+    try { await makeAudio(briefing, log, news); } catch (e) { log(`Spoken briefings failed: ${e.message}`); }
+    return;
+  }
   if (MODE === 'gemini-samples') { await makeGeminiSamples(briefing, log); return; }   // Gemini voices to compare (/voices)   // Chirp 3: HD voices to compare (/voices)
 
   // The worldwide stock list for the app's search box: built when missing, then once a week.
@@ -2072,9 +2220,18 @@ export async function main() {
   news.model = MODEL;
   news.last_run = { ...stats, at: news.updated, pictures: picStats };
 
-  if (shouldMakeBriefing(briefing)) {
+  const making = shouldMakeBriefing(briefing);
+  let front = [];
+  if (making) {
+    try { front = (await editorInChief(news.stories, briefing, apiKey)) || []; } catch (e) {
+      if (e.fatal) { console.error('\n❌ ' + e.message + '\n'); process.exit(1); }
+      log(`Editor-in-chief failed: ${e.message}`);
+    }
+  }
+  const lastLeads = Object.fromEntries(Object.entries(briefing.sections || {}).map(([k, v]) => [k, v?.title]).filter(([, t]) => t));
+  if (making) {
     try {
-      const b = await makeBriefing(news.stories, apiKey);
+      const b = await makeBriefing(news.stories, apiKey, new Date(), front, pastFronts(briefing, news.stories));
       if (b) {
         briefing.editions = [b, ...(briefing.editions || [])].slice(0, 6);
         log(`${b.edition} briefing written: "${b.title}"`);
@@ -2085,7 +2242,7 @@ export async function main() {
     }
   }
   try {
-    const secs = await makeSectionBriefs(news.stories, apiKey);
+    const secs = await makeSectionBriefs(news.stories, apiKey, new Date(), lastLeads);
     briefing.sections = { ...(briefing.sections || {}), ...secs };
     // the app shows the day's Morning and Evening briefings side by side: keep each edition
     const edition = londonHour() < 12 ? 'Morning' : 'Evening';

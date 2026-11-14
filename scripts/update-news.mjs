@@ -37,7 +37,7 @@ const ARTICLE_CHARS = 6000;    // how much of each article the AI reads
 const UPGRADE_MAX = 20;        // older stories per run that get key points added
 // Share of each run's full analyses per section, so no section crowds out the others.
 // Design (architecture, interiors, product design) only feeds For you, never a briefing.
-const SECTION_SHARE = { Design: 0.06, Tech: 0.235, Finance: 0.235, World: 0.235, Fashion: 0.235 };
+const SECTION_SHARE = { Design: 0.08, Tech: 0.23, Finance: 0.23, World: 0.23, Fashion: 0.23 };
 // Sources that never appear in the app.
 // Outlets left out of the app. Indian outlets are left out at the editor's request.
 const BLOCKED = /cnbc|the hindu\b|thehindu|hindustan times|hindustantimes|times of india|timesofindia|indiatimes|economic times|ndtv|livemint|\bmint\b|business standard|news18|india today|indiatoday|deccan|the print\b|theprint|firstpost|moneycontrol/i;
@@ -540,7 +540,7 @@ const ANALYSIS_TOOL = {
           properties: {
             article_index: { type: 'integer' },
             section: { type: 'string', enum: ['Tech', 'Finance', 'World', 'Fashion'], description: 'The section this story really belongs in, whatever the outlet or feed: Finance only for markets, companies, deals, central banks and the economy; politics, crime, royals and celebrities are World (if kept at all), even from a business outlet.' },
-            keep: { type: 'boolean', description: 'true for real news: tech, AI, gadgets, science, companies, finance, markets, economics, significant world/political news, and luxury/high-fashion news (luxury houses and groups, major designers and creative directors, the big fashion weeks, global fashion business). false for local or regional fashion weeks, single store openings, local designers, mass-market retail, sport, celebrity gossip, recipes, horoscopes, shopping deals/coupons and "best buys" edits, podcasts/newsletters with no news, and puzzles.' },
+            keep: { type: 'boolean', description: 'true for real news: tech, AI, gadgets, science, companies, finance, markets, economics, significant world/political news, and luxury/high-fashion news (luxury houses and groups, major designers and creative directors, the big fashion weeks, global fashion business). Architecture and design (from architecture and design sites): keep notable buildings and projects, architects and studios, product, furniture and industrial design launches, design awards, exhibitions, urbanism and planning; drop sponsored posts, real-estate listings and product round-ups or shopping lists. false for local or regional fashion weeks, single store openings, local designers, mass-market retail, sport, celebrity gossip, recipes, horoscopes, shopping deals/coupons and "best buys" edits, podcasts/newsletters with no news, and puzzles.' },
             same_story_as: { type: ['string', 'null'], description: 'If this article covers the SAME specific claim/event as an existing story, that story id (e.g. "a1b2c3d4e5"), or "article:N" for an earlier article in this batch. Otherwise null.' },
             status: { type: 'string', enum: ['rumour', 'confirmed', 'denied', 'news'], description: 'rumour = unconfirmed claim (leaks, "reportedly", "sources say", analyst predictions of company plans, "in talks"), including unconfirmed political or world developments that could move markets (e.g. possible tariffs, sanctions, rate decisions, ceasefires, government interventions). confirmed = an official announcement that confirms a previously rumoured claim. denied = officially denied. news = ordinary confirmed news.' },
             claim: { type: 'string', description: 'One short, neutral sentence in your own words stating the core news or claim. Max 140 chars.' },
@@ -759,7 +759,7 @@ const TRIAGE_TOOL = {
           type: 'object',
           properties: {
             i: { type: 'integer', description: 'Headline number.' },
-            keep: { type: 'boolean', description: 'false for sport, celebrity gossip, recipes, horoscopes, shopping deals and "best buys" lists, puzzles, podcasts/newsletters with no news, and trivial items. true for real tech, business, finance, economic, political and world news. Finance is for professionals (bankers, investors): drop personal-finance advice (mortgages, savings, pensions tips, credit cards) and consumer money stories unless they are major market news. Fashion is a LUXURY and high-fashion section: keep news about luxury houses and groups (LVMH, Kering, Hermès, Chanel, Prada, Richemont…), major designers and creative directors, the big four fashion weeks (Paris, Milan, London, New York) and couture, and major global fashion business. Drop local or regional fashion weeks, store openings in individual cities, local designers, regional or mass-market retail news, beauty contests, shopping edits, horoscopes and celebrity gossip.' },
+            keep: { type: 'boolean', description: 'false for sport, celebrity gossip, recipes, horoscopes, shopping deals and "best buys" lists, puzzles, podcasts/newsletters with no news, and trivial items. true for real tech, business, finance, economic, political and world news. Finance is for professionals (bankers, investors): drop personal-finance advice (mortgages, savings, pensions tips, credit cards) and consumer money stories unless they are major market news. Fashion is a LUXURY and high-fashion section: keep news about luxury houses and groups (LVMH, Kering, Hermès, Chanel, Prada, Richemont…), major designers and creative directors, the big four fashion weeks (Paris, Milan, London, New York) and couture, and major global fashion business. Drop local or regional fashion weeks, store openings in individual cities, local designers, regional or mass-market retail news, beauty contests, shopping edits, horoscopes and celebrity gossip. Architecture and design (from architecture and design sites): keep notable buildings and projects, architects and studios, product, furniture and industrial design launches, design awards, exhibitions, urbanism and planning; drop sponsored posts, real-estate listings and product round-ups or shopping lists.' },
             same_as: { type: ['string', 'null'], description: 'If it reports the SAME specific event as an existing story, that story id; or "a:N" for an earlier headline N in this list about the same event. Otherwise null. Be strict: same event, not just same topic.' }
           },
           required: ['i', 'keep', 'same_as']
@@ -770,7 +770,7 @@ const TRIAGE_TOOL = {
   }
 };
 
-const TRIAGE_SYSTEM = 'You sort incoming news headlines for a news app (sections: Tech, Finance, World, Fashion). For every headline decide whether to keep it and whether it duplicates an existing story or an earlier headline in the list. Call record_triage once with one item per headline.';
+const TRIAGE_SYSTEM = 'You sort incoming news headlines for a news app (sections: Tech, Finance, World, Fashion, Design for architecture and design). For every headline decide whether to keep it and whether it duplicates an existing story or an earlier headline in the list. Call record_triage once with one item per headline.';
 
 async function triageBatch(batch, recent, apiKey) {
   const existing = recent.map((s) => `${s.id} | ${s.headline || s.claim}`).join('\n') || '(none)';
@@ -938,8 +938,10 @@ export function mergeBatch(stories, batch, analyses, now = new Date().toISOStrin
         first_published: art.published,
         last_updated: now
       };
+      // a piece from a design site that isn't about architecture or design (a business story on
+      // Fast Company, say) goes to the section the AI chose, not to Design
       if (story.section === 'Design' && !(story.topics || []).some((t) => t === 'Architecture' || t === 'Design')) {
-        story.topics = [...(story.topics || []).filter((t) => t !== 'Other'), 'Design'];
+        story.section = normSection(['Tech', 'Finance', 'World', 'Fashion'].includes(an.section) ? an.section : 'Tech');
       }
       if (byId.has(story.id)) continue;
       byId.set(story.id, story);

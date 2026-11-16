@@ -24,6 +24,11 @@ on:
         type: choice
         options: [full, desk, editor, stocks, prices, subscribe, notify, audio, samples, gemini-samples, auto]
         default: full
+      voice:
+        description: "Gemini voice model for this run's spoken briefings (default = Flash, as set in audio.mjs)"
+        type: choice
+        options: [default, flash, pro]
+        default: default
       watchlist:
         description: "Your stocks, sent by the app (leave empty)"
         type: string
@@ -120,6 +125,7 @@ jobs:
           GOOGLE_TTS_KEY: ${{ secrets.GOOGLE_TTS_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_TTS: ${{ github.event.inputs.voice || 'default' }}
           ELEVENLABS_VOICE_ID: ${{ vars.ELEVENLABS_VOICE_ID }}
           ELEVENLABS_MODEL: ${{ vars.ELEVENLABS_MODEL }}
 

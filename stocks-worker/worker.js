@@ -770,7 +770,7 @@ const PAGES = {
 <h2>What stays on your iPhone</h2>
 <p>Your topics, regions, saved stories, reading history, stocks you follow and appearance settings are stored only on your iPhone. Deleting the app deletes them.</p>
 <h2>Location (optional)</h2>
-<p>If you allow it, Scout uses your location only to show the weather on Today. The app rounds it to about 1 km before asking the Scout service, which groups it into an area of about 5 km and shares one forecast per area. Your location is not stored or linked to you. Weather comes from Apple Weather (WeatherKit). Scout also uses the last location iOS already has to pick the nearest metro network (London, New York or Paris); it never asks for location for that.</p>
+<p>If you allow it, Scout uses your location only to show the weather on Today. The app rounds it to about 1 km before asking the Scout service, which groups it into an area of about 5 km and shares one forecast per area. Your location is not stored or linked to you. Weather comes from Apple Weather (WeatherKit); if it can't answer, the same rounded location is sent to Open-Meteo, a free weather service, for the forecast. Scout also uses the last location iOS already has to pick the nearest metro network (London, New York or Paris); it never asks for location for that.</p>
 <h2>Stocks you follow</h2>
 <p>When you follow a stock, its ticker (for example AAPL) is sent to the Scout service so that its price and summary are prepared. Only the ticker is sent, with no name or device identifier. Tickers stay on the shared list for 45 days after anyone last follows them.</p>
 <h2>Service requests</h2>

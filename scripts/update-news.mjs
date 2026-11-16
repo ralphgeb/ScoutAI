@@ -48,6 +48,7 @@ import { parseFeed, findMetaImage, findPublished, stripHtml } from './feed-parse
 import { updateStocks, validSymbol } from './stocks.mjs';
 import { publishFile, publishStocks, readPublishedStocks, addStats, addRun } from './publish.mjs';
 import { vapidKeys, ensurePublicKey, saveFromApp, sendMorning } from './push.mjs';
+import { photoDesk } from './photo-desk.mjs';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -1365,7 +1366,7 @@ export async function newsPulse() {
       const key = a.title.toLowerCase().slice(0, 60);
       if (seenTitles.has(key)) continue;
       seenTitles.add(key);
-      out.push({ where: PULSE_FEEDS[i].name, title: a.title, source: a.source });
+      out.push({ where: PULSE_FEEDS[i].name, title: a.title, source: a.source, link: a.link, section: PULSE_FEEDS[i].section, region: PULSE_FEEDS[i].region, published: a.published });
     }
   });
   return out.slice(0, 80);
@@ -1400,20 +1401,49 @@ const EIC_TOOL = {
         description: 'Stories filed in the wrong section, up to 10 (e.g. a nationwide flight ground stop filed under Finance belongs in World).',
         items: { type: 'object', properties: { story_id: { type: 'string' }, section: { type: 'string', enum: ['Tech', 'Finance', 'World'] } }, required: ['story_id', 'section'] }
       },
-      missing: { type: 'array', items: { type: 'string' }, description: 'Big events leading the Google News front pages that none of our stories cover (short descriptions), so they can be logged.' }
+      missing: {
+        type: 'array',
+        description: 'Big events on the Google News front pages that none of our stories covers, up to 6, most important first: the number of the Google News headline and a short description. These get written up and added straight away.',
+        items: { type: 'object', properties: { headline: { type: 'integer', description: 'The [number] of the Google News headline.' }, what: { type: 'string' } }, required: ['headline', 'what'] }
+      }
     },
     required: ['front_page', 'importance', 'section_fixes', 'missing']
   }
 };
 
-const EIC_SYSTEM = `You are the editor-in-chief of Scout, a news app for busy readers in the UK and the US covering tech, business and markets, and world news. Your section editors have filed and combined today's stories; you decide what today's news really is.
-How to judge:
-- What is NEW in the last 24 hours matters most. A story that has run for days collects hundreds of outlets; that volume is not today's importance. If it led the last days and nothing big happened in it today, it moves down the front page (it can stay on it if it is still major).
-- The Google News front pages show what everyone is reading right now. Every big event leading them that one of our stories covers belongs on the front page or at least at importance 8+, whatever section it was filed in. Nationwide disruptions (air traffic, power, telecoms or cloud outages hitting millions), disasters, major political events and big market moves are front-page news.
-- A balanced front page: no more than two stories on the same subject, and a mix of world, business and tech when the news allows.
-- Only use story ids from the list. Call record_front_page once.`;
+const EIC_SYSTEM = `You are the editor-in-chief of Scout, a news app for busy readers in the UK and the US covering tech, business and markets, and world news. Your section editors have filed and combined today's stories; you see the bigger picture and decide what today's news really is.
+Weigh every story on five things, together:
+1. NEWNESS. What happened in the last 24 hours matters most. A story that has run for days collects hundreds of outlets; that pile is not today's importance. If it led on earlier days and nothing big happened in it today, it moves down (it can stay on the front page if it is still major). A genuinely big new development in a running story (a resignation, a verdict, an escalation) is new news.
+2. HOW WIDELY IT IS REPORTED TODAY. Outlets in the last 24 hours, and above all how many top-tier newsrooms (Reuters, AP, BBC, Bloomberg, FT, WSJ, NYT…) carry it independently. Many outlets copying one report is still one report.
+3. WHAT EVERYONE IS READING. The Google News front pages (UK, US, business, technology) show it; a story that several of them lead with is front-page news for us too, whatever section it was filed in.
+4. WHERE AND HOW MANY PEOPLE. Readers are mostly in the US and the UK, then Europe and Asia. Something affecting millions (nationwide disruptions to flights, power, telecoms or cloud services, disasters, wars and escalations, elections, major court rulings) outranks something affecting a few.
+5. IMPACT ON THE WORLD AND THE MARKETS. Moves in oil, rates, currencies, the biggest companies or the whole market, new laws and regulation, and decisions by governments and central banks.
+Then build the front page: the single most important story first; no more than two stories on the same subject; a mix of world, business and tech when the news allows. Before you finish, check the Google News front pages line by line: every big event there that one of our stories covers must be on our front page or rated 8+. List in "missing" any big event there that none of our stories covers.
+Only use story ids from the list. Call record_front_page once.`;
 
-export async function editorInChief(stories, briefing, apiKey, now = new Date()) {
+/** Writes up big events the editor-in-chief found on the Google News front pages and we had missed. */
+async function catchUp(stories, items, apiKey) {
+  const arts = items.filter((p) => p.link).map((p) => ({
+    title: p.title, link: p.link, source: p.source, section: normSection(p.section), region: normRegion(p.region),
+    published: p.published || new Date().toISOString(), snippet: '', image: ''
+  }));
+  if (!arts.length) return 0;
+  try {
+    await readArticles(arts);
+    await addOpenCoverage(arts, 'missed', apiKey);
+    const recent = [...stories].sort((a, b) => (b.last_updated || '').localeCompare(a.last_updated || '')).slice(0, 60);
+    const analyses = await analyseBatch(arts, recent, apiKey);
+    const r = mergeBatch(stories, arts, analyses);
+    log(`Editor-in-chief: ${r.added} missed stories written up, ${r.merged} added to stories we had.`);
+    return r.added + r.merged;
+  } catch (e) {
+    if (e.fatal) throw e;
+    log(`Catching up on missed stories failed: ${e.message}`);
+    return 0;
+  }
+}
+
+export async function editorInChief(stories, briefing, apiKey, now = new Date(), opts = {}) {
   const since = new Date(now.getTime() - 30 * 3600e3).toISOString();
   const pub = (s) => s.first_published || s.first_seen || '';
   const recent = stories.filter((s) => FRONT_SECTIONS.has(normSection(s.section)) && (pub(s) >= since || (s.last_updated || '') >= since));
@@ -1423,21 +1453,30 @@ export async function editorInChief(stories, briefing, apiKey, now = new Date())
   // the most important stories, the most covered ones, and any that match a Google News headline
   const byImportance = [...recent].sort((a, b) => (b.importance || 0) - (a.importance || 0) || (b.sources?.length || 0) - (a.sources?.length || 0));
   const pick = new Map(byImportance.slice(0, 60).map((s) => [s.id, s]));
+  // how widely each story is covered today: outlets in the last 24 hours, and the top-tier ones
+  const day = new Date(now.getTime() - 24 * 3600e3).toISOString();
+  const fresh = (s) => (s.sources || []).filter((x) => (x.published || '') >= day);
+  const tier1 = (list) => new Set(list.filter((x) => TIER1.test(x.name || '')).map((x) => String(x.name).replace(/ (World|Business|Markets|Technology|Politics|US|UK).*$/i, ''))).size;
+  for (const s of [...recent].sort((a, b) => fresh(b).length - fresh(a).length).slice(0, 25)) if (pick.size < 110) pick.set(s.id, s);
+  // which Google News front-page headlines each story matches
+  const onFront = new Map();
   for (const p of pulse) {
     const pw = pulseWords(p.title);
     const best = recent.map((s) => ({ s, n: [...pulseWords(s.headline || s.claim)].filter((w) => pw.has(w)).length }))
       .filter((x) => x.n >= 2).sort((a, b) => b.n - a.n || (b.s.sources?.length || 0) - (a.s.sources?.length || 0))[0];
-    if (best && pick.size < 100) pick.set(best.s.id, best.s);
+    if (!best) continue;
+    onFront.set(best.s.id, (onFront.get(best.s.id) || 0) + 1);
+    if (pick.size < 120) pick.set(best.s.id, best.s);
   }
   const pool = [...pick.values()];
   const ids = new Set(pool.map((s) => s.id));
-  const list = pool.map((s) => `${s.id} | ${normSection(s.section)} | importance ${s.importance ?? '?'} | ${s.sources?.length || 1} outlet(s) | first seen ${pub(s).slice(0, 16)} | updated ${(s.last_updated || '').slice(0, 16)} | ${s.headline || s.claim}\n   ${trim(s.summary, 300)}`).join('\n');
-  const pulseText = pulse.length ? pulse.map((p) => `[${p.where}] ${p.title} (${p.source})`).join('\n') : '(unavailable this run)';
+  const list = pool.map((s) => `${s.id} | ${normSection(s.section)} | ${s.region || 'Global'} | importance ${s.importance ?? '?'} | impact ${s.overall_impact || 'none'} | ${s.sources?.length || 1} outlets (${fresh(s).length} in 24h, ${tier1(s.sources || [])} top-tier) | Google News front pages: ${onFront.get(s.id) || 0} | first seen ${pub(s).slice(0, 16)} | updated ${(s.last_updated || '').slice(0, 16)} | ${s.headline || s.claim}\n   ${trim(s.summary, 300)}`).join('\n');
+  const pulseText = pulse.length ? pulse.map((p, i) => `[${i}] (${p.where}) ${p.title} (${p.source})`).join('\n') : '(unavailable this run)';
   const x = await callClaude({
     model: BRIEFING_MODEL, max_tokens: 3000,
     system: EIC_SYSTEM,
     tools: [EIC_TOOL], tool_choice: { type: 'tool', name: 'record_front_page' },
-    messages: [{ role: 'user', content: `It is ${now.toISOString().slice(0, 16)} UTC.\n\nWhat Scout led with on earlier days:\n${pastFronts(briefing, stories)}\n\nGoogle News front pages right now:\n${pulseText}\n\nOur stories from the last 30 hours (id | section | importance | outlets | first seen | updated | headline, then summary):\n${list}` }]
+    messages: [{ role: 'user', content: `It is ${now.toISOString().slice(0, 16)} UTC.\n\nWhat Scout led with on earlier days:\n${pastFronts(briefing, stories)}\n\nGoogle News front pages right now:\n${pulseText}\n\nOur stories from the last 30 hours (id | section | where | importance | market impact | outlets (in the last 24h, top-tier) | Google News front pages leading with it | first seen | updated | headline, then summary):\n${list}` }]
   }, apiKey);
   let changed = 0, moved = 0;
   const byId = new Map(stories.map((s) => [s.id, s]));
@@ -1453,8 +1492,14 @@ export async function editorInChief(stories, briefing, apiKey, now = new Date())
   const front = [...new Set((x.front_page || []).filter((id) => ids.has(id)))].slice(0, 8);
   // the front page goes to the top of the order, in the editor-in-chief's order
   front.forEach((id, i) => { const s = byId.get(id); if (s) s.importance = Math.max(s.importance || 0, i === 0 ? 10 : i < 3 ? 9 : 8); });
-  briefing.front = { generated: now.toISOString(), story_ids: front, missing: (x.missing || []).slice(0, 10).map((m) => trim(m, 160)), pulse: pulse.length };
-  log(`Editor-in-chief: front page of ${front.length}, ${changed} importance scores changed, ${moved} stories moved section; ${pulse.length} Google News headlines read${(x.missing || []).length ? `; not covered: ${(x.missing || []).slice(0, 4).join('; ')}` : ''}.`);
+  const missing = (x.missing || []).filter((m) => pulse[m.headline]).slice(0, 6);
+  briefing.front = { generated: now.toISOString(), story_ids: front, missing: missing.map((m) => trim(m.what, 160)), pulse: pulse.length };
+  log(`Editor-in-chief: front page of ${front.length}, ${changed} importance scores changed, ${moved} stories moved section; ${pulse.length} Google News headlines read${missing.length ? `; not covered yet: ${missing.map((m) => m.what).slice(0, 6).join('; ')}` : ''}.`);
+  // big news we haven't got: written up now, then the front page is looked at again with it
+  if (missing.length && !opts.second) {
+    const added = await catchUp(stories, missing.map((m) => pulse[m.headline]), apiKey);
+    if (added) return editorInChief(stories, briefing, apiKey, now, { second: true });
+  }
   return front;
 }
 
@@ -1980,6 +2025,33 @@ export async function makeSectionBriefs(stories, apiKey, now = new Date(), befor
   return out;
 }
 
+// ---------- The photo desk's wider search ----------
+/** Pictures of the same event from other outlets (Bing News), each checked by the AI as the same story. */
+export async function morePictures(story, apiKey) {
+  const own = new Set((story.sources || []).map((x) => hostOf(x.link)));
+  const q = String(story.headline || story.claim || '').slice(0, 120);
+  if (!q) return [];
+  const found = (await bingNews(q).catch(() => []))
+    .filter((c) => c.link && !own.has(hostOf(c.link)) && !/news\.google\.com/.test(c.link)).slice(0, 8);
+  if (!found.length) return [];
+  const same = await confirmSame(found.map((c, i) => ({ id: `p${i}`, headline: q, outlet: c.outlet, candidate: c.title })), apiKey);
+  const ok = found.filter((c, i) => same.has(`p${i}`)).slice(0, 4);
+  const out = [];
+  await Promise.all(ok.map(async (c) => {
+    const a = await fetchArticle(c.link).catch(() => ({}));
+    if (a.image) out.push({ url: a.image, credit: c.outlet });
+    else if (c.image && !/bing\.com\/th/.test(c.image)) out.push({ url: c.image, credit: c.outlet });
+  }));
+  return out;
+}
+
+/** The photo desk over the briefing's six main pictures (see photo-desk.mjs). */
+async function runPhotoDesk(briefing, stories, apiKey) {
+  try {
+    await photoDesk(briefing, stories, { readPage: fetchArticle, more: (s) => morePictures(s, apiKey), log });
+  } catch (e) { log(`Photo desk failed: ${e.message}`); }
+}
+
 // ---------- Main ----------
 export async function main() {
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -2087,11 +2159,21 @@ export async function main() {
     const remapped = remapBriefing(briefing, news.stories);
     const pics = leadPictures(briefing, news.stories);
     sectionCovers(briefing, news.stories);
+    await runPhotoDesk(briefing, news.stories, apiKey);
     log(`Briefings: ${remapped} links moved to combined stories, ${pics} lead pictures added.`);
     news.updated = new Date().toISOString();
     await writeJSON(NEWS_FILE, news);
     await writeJSON(BRIEFING_FILE, briefing);
     log(await publishFile('news.json', news) && await publishFile('briefing.json', briefing) ? 'Edited stories published.' : 'Edited stories not published.');
+    return;
+  }
+  if (MODE === 'photos') {   // the photo desk on the current briefings: sharp, fresh main pictures (no new news)
+    const news = await readJSON(NEWS_FILE, { stories: [] });
+    await runPhotoDesk(briefing, news.stories, apiKey);
+    briefing.updated = news.updated = new Date().toISOString();
+    await writeJSON(NEWS_FILE, news);
+    await writeJSON(BRIEFING_FILE, briefing);
+    log(await publishFile('news.json', news) && await publishFile('briefing.json', briefing) ? 'New pictures published.' : 'New pictures not published.');
     return;
   }
   if (MODE === 'editor') {   // the editor-in-chief again on today's stories: new front page and briefings (no new news)
@@ -2114,6 +2196,7 @@ export async function main() {
     remapBriefing(briefing, news.stories);
     leadPictures(briefing, news.stories);
     sectionCovers(briefing, news.stories);
+    await runPhotoDesk(briefing, news.stories, apiKey);
     briefing.updated = news.updated = new Date().toISOString();
     await writeJSON(NEWS_FILE, news);
     await writeJSON(BRIEFING_FILE, briefing);
@@ -2255,6 +2338,7 @@ export async function main() {
   remapBriefing(briefing, news.stories);
   leadPictures(briefing, news.stories);
   sectionCovers(briefing, news.stories);
+  await runPhotoDesk(briefing, news.stories, apiKey);
   briefing.updated = new Date().toISOString();
 
   await doStocks('all');

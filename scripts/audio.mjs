@@ -117,7 +117,11 @@ const ELEVEN_MODELS = {};
 // turns into MP3. If Gemini fails, that briefing is recorded with Chirp 3: HD instead.
 const GEMINI = { Tech: 'gemini-2.5-flash-preview-tts', Finance: 'gemini-2.5-flash-preview-tts', World: 'gemini-2.5-flash-preview-tts', Fashion: 'gemini-2.5-flash-preview-tts' };   // Flash for all four
 // A one-off choice from the workflow's "voice" input (e.g. Pro for one day's recordings): all four.
-const GEMINI_ONE_OFF = { pro: 'gemini-2.5-pro-preview-tts', flash: 'gemini-2.5-flash-preview-tts' }[(process.env.GEMINI_TTS || '').toLowerCase()];
+// Days (UK date) whose recordings are made with Pro from the start, at the editor's request.
+const PRO_DAYS = new Set(['2026-11-17']);
+const ukToday = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London' }).format(new Date());
+const GEMINI_ONE_OFF = { pro: 'gemini-2.5-pro-preview-tts', flash: 'gemini-2.5-flash-preview-tts' }[(process.env.GEMINI_TTS || '').toLowerCase()]
+  || (PRO_DAYS.has(ukToday) ? 'gemini-2.5-pro-preview-tts' : undefined);
 if (GEMINI_ONE_OFF) for (const k of Object.keys(GEMINI)) GEMINI[k] = GEMINI_ONE_OFF;
 const GEMINI_VOICE = 'Iapetus';   // clear; tried from the evening of 12 November
 const GEMINI_PROMPT = 'Say in a warm, lively British newsreader voice:';

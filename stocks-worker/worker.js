@@ -766,7 +766,7 @@ function parisLevel(d) {
 
 const PAGES = {
   privacy: ["Privacy policy", `
-<p>Scout is a news app. It has no accounts, no ads, no analytics and no tracking. This page explains the little information it uses, and why.</p>
+<p>Scout is a news app. It has no accounts, no ads and no tracking. This page explains the little information it uses, and why.</p>
 <h2>What stays on your iPhone</h2>
 <p>Your topics, regions, saved stories, reading history, stocks you follow and appearance settings are stored only on your iPhone. Deleting the app deletes them.</p>
 <h2>Location (optional)</h2>
@@ -775,6 +775,8 @@ const PAGES = {
 <p>When you follow a stock, its ticker (for example AAPL) is sent to the Scout service so that its price and summary are prepared. Only the ticker is sent, with no name or device identifier. Tickers stay on the shared list for 45 days after anyone last follows them.</p>
 <h2>Service requests</h2>
 <p>Like any web service, the Scout service (on Cloudflare) sees the IP address of each request. It is used only to limit how many requests one address can make in a day, kept for a day in a cache, and never stored with anything else.</p>
+<h2>What gets played</h2>
+<p>When you play a briefing or a story, the app tells the Scout service what was played (which briefing or story), so we know which recordings are worth making. Nothing about you or your device is sent with it.</p>
 <h2>Purchases</h2>
 <p>Scout Plus is bought through Apple. Scout never sees your payment details; Apple only tells the app whether your subscription is active.</p>
 <h2>News</h2>
@@ -810,6 +812,6 @@ function page(name) {
 body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.55 -apple-system,system-ui,sans-serif}
 main{max-width:680px;margin:0 auto;padding:40px 20px 60px}h1{font-size:30px;margin:0 0 6px}h2{font-size:19px;margin:28px 0 6px}
 a{color:var(--accent)}.small{opacity:.6;font-size:14px}</style></head><body><main>
-<p class="small">Scout: News on the go</p><h1>${title}</h1>${body}<p class="small">Last updated 31 October 2026</p></main></body></html>`;
+<p class="small">Scout: News on the go</p><h1>${title}</h1>${body}<p class="small">Last updated 16 November 2026</p></main></body></html>`;
   return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "max-age=3600" } });
 }
